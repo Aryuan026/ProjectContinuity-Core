@@ -154,7 +154,7 @@ runtime use, adapter code, and architectural reference are recorded in
 
 ## Release truth
 
-Version `0.1.0` is a source-first alpha. The core front, five-tool MCP path,
+Version `0.1.1` is a source-first alpha. The core front, five-tool MCP path,
 role/CAS boundary, current Stage flow, keyword/exact Case retrieval, recoverable
 promotion lifecycle, and offline Case relocation are covered by the repository
 test suite. Prebuilt `.venv`, `node_modules`, databases, credentials, and

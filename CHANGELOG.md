@@ -3,6 +3,13 @@
 All notable public changes are recorded here. Private deployment receipts,
 mutable project memory, and raw construction logs do not belong in this file.
 
+## 0.1.1 — Full-history secret-scan correction
+
+- Run the official Gitleaks CLI against `git --log-opts=--all` instead of
+  relying on the GitHub event range selected by the convenience action.
+- Verify the exact Gitleaks v8.30.1 release archive before execution.
+- No ProjectContinuity runtime, data, tool, authority, or donor contract changed.
+
 ## 0.1.0 — Initial public alpha
 
 - Added the authenticated loopback front and fixed five-tool MCP surface.
