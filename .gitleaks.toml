@@ -10,4 +10,10 @@ regexes = [
   '''sk-test-not-a-real-secret''',
   '''sk-live-example''',
   '''sk-json-example''',
+  '''partial-cognify-1''',
+  '''case-wakeup-002''',
+  '''self-relation-1''',
+  '''unbounded-relations-1''',
+  '''missing-relation-1''',
+  '''foreign-relation-1''',
 ]
