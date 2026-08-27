@@ -3,6 +3,16 @@
 All notable public changes are recorded here. Private deployment receipts,
 mutable project memory, and raw construction logs do not belong in this file.
 
+## 0.1.2 — Project and donor license separation
+
+- Restore the root `LICENSE` to the canonical Apache-2.0 text without Cognee's
+  project-specific applied copyright notice.
+- Retain Cognee's complete upstream license in
+  `third_party/licenses/COGNEE-LICENSE` and ProjectContinuity's copyright in
+  `NOTICE`.
+- Ignore common private operator credential and local-config paths.
+- No runtime, data, tool, authority, or donor contract changed.
+
 ## 0.1.1 — Full-history secret-scan correction
 
 - Run the official Gitleaks CLI against `git --log-opts=--all` instead of

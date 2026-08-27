@@ -23,3 +23,7 @@ dist/
 data/
 state/
 runtime/
+credentials/
+.secrets/
+config/*.private.toml
+config/*.local.toml

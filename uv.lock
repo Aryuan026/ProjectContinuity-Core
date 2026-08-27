@@ -2566,7 +2566,7 @@ wheels = [
 
 [[package]]
 name = "project-continuity"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "tomli", marker = "python_full_version < '3.11'" },
