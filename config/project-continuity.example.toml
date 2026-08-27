@@ -1,0 +1,29 @@
+schema_version = 1
+
+[paths]
+install_root = "/opt/project-continuity/releases/REPLACE_WITH_EXACT_COMMIT"
+data_root = "/var/lib/project-continuity"
+state_root = "/var/lib/project-continuity-state"
+
+[[projects]]
+id = "project-alpha"
+repo_url = "https://github.com/example-org/project-alpha"
+
+[[projects]]
+id = "project-beta"
+repo_url = "https://github.com/example-org/project-beta"
+
+[[principals]]
+id = "agent-writer"
+actor = "coding-agent-a"
+
+[principals.roles]
+project-alpha = "promoter"
+project-beta = "writer"
+
+[[principals]]
+id = "agent-reader"
+actor = "review-agent-b"
+
+[principals.roles]
+project-alpha = "reader"

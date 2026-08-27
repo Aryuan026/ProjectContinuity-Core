@@ -1,0 +1,13 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exact non-secret sanitizer fixtures"
+regexTarget = "match"
+regexes = [
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''dXNlcjpwYXNz''',
+  '''sk-test-not-a-real-secret''',
+  '''sk-live-example''',
+  '''sk-json-example''',
+]

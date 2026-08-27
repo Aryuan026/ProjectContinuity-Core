@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "project-continuity"
+version = "0.1.0"
+description = "Portable, authority-aware project memory for coding agents."
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Aryuan026 and ProjectContinuity contributors" },
+]
+keywords = ["agents", "project-memory", "mcp", "handoff", "cognee"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = [
+  "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+turritopsis-front = [
+  "turritopsis @ git+https://github.com/anhe2021212-spec/Turritopsis.git@fd94c75f362260abb81ddd02296f14dc22350e73",
+]
+cognee-archive = [
+  "cognee @ git+https://github.com/topoteretes/cognee.git@a8f9760bb6da90a9956b3be77c0d0534134f533a",
+]
+codex-mcp = ["mcp==1.29.1"]
+
+[project.scripts]
+project-continuity = "project_continuity.cli:main"
+project-continuity-front = "project_continuity.server:main"
+project-continuity-mcp = "project_continuity.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/Aryuan026/ProjectContinuity-Core"
+Issues = "https://github.com/Aryuan026/ProjectContinuity-Core/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

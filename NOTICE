@@ -1,0 +1,9 @@
+ProjectContinuity
+Copyright 2026 Aryuan026 and ProjectContinuity contributors
+
+This product is licensed under the Apache License, Version 2.0.
+
+ProjectContinuity integrates with or references open-source projects whose
+licenses and notices are listed in THIRD_PARTY_NOTICES.md and
+third_party/licenses/. No upstream source tree is copied into
+src/project_continuity.

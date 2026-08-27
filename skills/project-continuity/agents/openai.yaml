@@ -1,0 +1,10 @@
+interface:
+  display_name: "Project Continuity"
+  short_description: "Resume project work from reviewed continuity memory"
+  default_prompt: "Use $project-continuity to resume this project from its current handoff and exact historical evidence."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "project-continuity"
+      description: "Authenticated five-tool ProjectContinuity front adapter"
+      transport: "stdio"
