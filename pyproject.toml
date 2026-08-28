@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-continuity"
-version = "0.1.2"
+version = "0.1.3"
 description = "Portable, authority-aware project memory for coding agents."
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -32,6 +32,8 @@ turritopsis-front = [
 cognee-archive = [
   "cognee @ git+https://github.com/topoteretes/cognee.git@a8f9760bb6da90a9956b3be77c0d0534134f533a",
 ]
+mcp-client = ["mcp==1.29.1"]
+# Compatibility alias for public 0.1.0-0.1.2 install commands.
 codex-mcp = ["mcp==1.29.1"]
 
 [project.scripts]

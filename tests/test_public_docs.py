@@ -1,5 +1,10 @@
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,3 +63,24 @@ def test_private_operator_paths_are_ignored() -> None:
         "config/*.local.toml",
     ):
         assert pattern in ignored
+
+
+def test_client_install_is_agent_neutral_with_legacy_alias() -> None:
+    package = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = package["project"]["optional-dependencies"]
+    assert extras["mcp-client"] == ["mcp==1.29.1"]
+    assert extras["codex-mcp"] == extras["mcp-client"]
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    install = (ROOT / "INSTALL.md").read_text(encoding="utf-8")
+    skill = (ROOT / "skills/project-continuity/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "--extra mcp-client" in readme
+    assert "--extra mcp-client" in install
+    assert "coding Agent or MCP-capable client" in skill
+    assert "Use when Codex joins" not in skill
+    assert "not a hierarchy between Agent products" in readme
+    assert "no client product is the permission authority" in (
+        ROOT / "AI_START_HERE.md"
+    ).read_text(encoding="utf-8")
