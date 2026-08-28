@@ -60,6 +60,12 @@ The front derives the principal, actor, and project role from a private token.
 Clients cannot self-report identity. Every update carries the exact Stage
 revision it read; stale writes fail instead of overwriting newer work.
 
+Roles describe work on one project, not a hierarchy between Agent products.
+An Agent or device that performs durable project work should normally receive
+that project's `writer` role and update the shared handoff itself. A genuinely
+review-only participant uses `reader`; rare reviewed-history archival remains a
+separate `promoter` capability. The human operator owns these assignments.
+
 ## Quick start
 
 The complete, agent-readable procedure is in [INSTALL.md](INSTALL.md). In short:
@@ -67,7 +73,7 @@ The complete, agent-readable procedure is in [INSTALL.md](INSTALL.md). In short:
 ```bash
 git clone https://github.com/Aryuan026/ProjectContinuity-Core.git
 cd ProjectContinuity-Core
-uv sync --frozen --extra turritopsis-front --extra cognee-archive --extra codex-mcp
+uv sync --frozen --extra turritopsis-front --extra cognee-archive --extra mcp-client
 cp config/project-continuity.example.toml /absolute/private/path/config.toml
 uv run project-continuity --config /absolute/private/path/config.toml validate
 ```
@@ -84,6 +90,18 @@ uv run project-continuity-front \
 Keep the listener on loopback. Remote clients should use an SSH tunnel or a
 separately reviewed authenticated HTTPS gateway; do not expose the donor
 services or the front as a raw public management port.
+
+To connect a new coding Agent to an existing canonical front, install only the
+client-neutral stdio adapter:
+
+```bash
+uv sync --frozen --no-dev --extra mcp-client
+```
+
+This client-only path does not install the Turritopsis/Cognee runtime, create a
+local Store or Case archive, or start another front. `codex-mcp` remains a
+deprecated compatibility alias for the public 0.1.0-0.1.2 commands; it does not
+mean the protocol or product is Codex-specific.
 
 ## Everyday Agent path
 
@@ -154,7 +172,7 @@ runtime use, adapter code, and architectural reference are recorded in
 
 ## Release truth
 
-Version `0.1.2` is a source-first alpha. The core front, five-tool MCP path,
+Version `0.1.3` is a source-first alpha. The core front, five-tool MCP path,
 role/CAS boundary, current Stage flow, keyword/exact Case retrieval, recoverable
 promotion lifecycle, and offline Case relocation are covered by the repository
 test suite. Prebuilt `.venv`, `node_modules`, databases, credentials, and

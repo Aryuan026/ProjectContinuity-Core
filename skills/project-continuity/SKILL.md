@@ -1,6 +1,6 @@
 ---
 name: project-continuity
-description: Resume, hand off, or investigate a software project through ProjectContinuity's current Stage memory and reviewed engineering Cases. Use when Codex joins a project without prior chat context, needs the current handoff or historical fault chain, must update durable project cognition after work, or explicitly promote a reviewed exact revision. Also use for cross-device or cross-agent coding continuity without replaying conversations.
+description: Resume, hand off, or investigate a software project through ProjectContinuity's current Stage memory and reviewed engineering Cases. Use when a coding Agent or MCP-capable client joins a project without prior chat context, needs the current handoff or historical fault chain, must update durable project cognition after work, or explicitly promote a reviewed exact revision. Also use for cross-device or cross-agent coding continuity without replaying conversations.
 ---
 
 # Project Continuity

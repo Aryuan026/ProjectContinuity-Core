@@ -30,6 +30,12 @@ The tool surface is fixed: `list / search / get / update / promote`.
 Identity comes from the private Bearer token. The request cannot supply its own
 principal or actor.
 
+These roles are project-scoped duties, not a ranking of Codex, Hermes,
+OpenCode, WorkBuddy, Claude Code, or any future client. A coding Agent that
+finishes durable work should normally hold `writer` for that project and write
+its own handoff. Use `reader` for a true review-only participant. The human
+operator owns role assignment; no client product is the permission authority.
+
 ```text
 POST http://127.0.0.1:8766/v1/invoke
 Authorization: Bearer <private token>

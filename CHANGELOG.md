@@ -3,6 +3,18 @@
 All notable public changes are recorded here. Private deployment receipts,
 mutable project memory, and raw construction logs do not belong in this file.
 
+## 0.1.3 — Client-neutral MCP packaging
+
+- Add `mcp-client` as the generic client-only extra for any MCP-capable coding
+  Agent connecting to an existing canonical front.
+- Retain `codex-mcp` as a deprecated compatibility alias for the public
+  0.1.0-0.1.2 install commands; no existing client is forced to migrate in
+  place.
+- Generalize the release-owned Skill trigger from Codex to coding Agents and
+  MCP-capable clients. Codex, OpenCode, WorkBuddy, Claude Code, and future MCP
+  hosts remain adapters around the same five tools, not separate products.
+- No tool, role, Stage, Case, identity, promotion, or donor contract changed.
+
 ## 0.1.2 — Project and donor license separation
 
 - Restore the root `LICENSE` to the canonical Apache-2.0 text without Cognee's

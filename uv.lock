@@ -2566,7 +2566,7 @@ wheels = [
 
 [[package]]
 name = "project-continuity"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "." }
 dependencies = [
     { name = "tomli", marker = "python_full_version < '3.11'" },
@@ -2579,6 +2579,9 @@ codex-mcp = [
 cognee-archive = [
     { name = "cognee" },
 ]
+mcp-client = [
+    { name = "mcp" },
+]
 test = [
     { name = "pytest" },
 ]
@@ -2590,11 +2593,12 @@ turritopsis-front = [
 requires-dist = [
     { name = "cognee", marker = "extra == 'cognee-archive'", git = "https://github.com/topoteretes/cognee.git?rev=a8f9760bb6da90a9956b3be77c0d0534134f533a" },
     { name = "mcp", marker = "extra == 'codex-mcp'", specifier = "==1.29.1" },
+    { name = "mcp", marker = "extra == 'mcp-client'", specifier = "==1.29.1" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "turritopsis", marker = "extra == 'turritopsis-front'", git = "https://github.com/anhe2021212-spec/Turritopsis.git?rev=fd94c75f362260abb81ddd02296f14dc22350e73" },
 ]
-provides-extras = ["test", "turritopsis-front", "cognee-archive", "codex-mcp"]
+provides-extras = ["test", "turritopsis-front", "cognee-archive", "mcp-client", "codex-mcp"]
 
 [[package]]
 name = "propcache"
