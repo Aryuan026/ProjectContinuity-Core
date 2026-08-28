@@ -35,7 +35,7 @@ The first-install inventory is deliberately finite:
 uv sync --frozen --no-dev \
   --extra turritopsis-front \
   --extra cognee-archive \
-  --extra codex-mcp
+  --extra mcp-client
 ```
 
 Do not install donor packages globally. `uv.lock` is the runtime identity for
@@ -131,6 +131,17 @@ get(project-alpha, stage_id=project.handoff)
 ```
 
 ## 6. Install the MCP adapter
+
+For a client that connects to an already-running canonical front, do not run
+the full self-hosting steps above. Its exact accepted checkout needs only:
+
+```bash
+uv sync --frozen --no-dev --extra mcp-client
+```
+
+This produces `project-continuity-mcp` without installing the donor runtimes,
+initializing local data, or starting `project-continuity-front`. The old
+`codex-mcp` extra remains a deprecated 0.1.x compatibility alias only.
 
 Point the Agent runtime at the accepted release's executable. For Codex:
 
