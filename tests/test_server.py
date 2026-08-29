@@ -16,6 +16,7 @@ from project_continuity.cognee_adapter import CogneeCapabilityUnavailable
 from project_continuity.server import (
     BIND_HOST,
     CredentialSet,
+    FrontApplication,
     ServerConfigError,
     bind_cognee_environment,
     create_server,
@@ -181,6 +182,24 @@ def test_health_is_loopback_only_and_does_not_require_a_token(tmp_path: Path) ->
         create_server(config, credentials, host="0.0.0.0", port=8766)
 
 
+def test_failed_server_construction_closes_the_archive_loop(monkeypatch) -> None:
+    seen = {}
+
+    def fail_bind(_address, handler):
+        seen["application"] = handler.app
+        raise OSError("injected bind failure")
+
+    monkeypatch.setattr(
+        "project_continuity.server.CredentialSet.load",
+        lambda *_arguments: CredentialSet(()),
+    )
+    monkeypatch.setattr("project_continuity.server._LoopbackServer", fail_bind)
+    with pytest.raises(OSError, match="injected bind failure"):
+        create_server(object(), Path("unused"), port=0, front=FakeFront())
+
+    assert seen["application"]._archive_loop.is_closed()
+
+
 def test_bearer_identity_routes_all_five_tools_without_actor_claim(tmp_path: Path) -> None:
     with _running(tmp_path) as (port, front):
         token = TOKENS["promoter-client"]
@@ -239,6 +258,34 @@ def test_case_get_and_search_reuse_the_existing_get_search_tools(tmp_path: Path)
     assert get[0] == 200
     assert [call[0] for call in front.calls] == ["search_cases", "get_case"]
     assert front.calls[0][3]["match"] == "keyword"
+
+
+def test_archive_requests_reuse_one_event_loop_and_close_it() -> None:
+    class LoopBoundFront(FakeFront):
+        def __init__(self) -> None:
+            super().__init__()
+            self.loops = []
+
+        async def get_case(self, principal_id, project_id, promotion_id):
+            self.loops.append(asyncio.get_running_loop())
+            return await super().get_case(principal_id, project_id, promotion_id)
+
+    front = LoopBoundFront()
+    application = FrontApplication(front, CredentialSet(()))
+    request = {
+        "tool": "get",
+        "project_id": "alpha",
+        "arguments": {"promotion_id": "promotion:" + "a" * 64},
+    }
+    try:
+        application.invoke("reader-client", request)
+        application.invoke("reader-client", request)
+        assert front.loops[0] is front.loops[1]
+        assert not front.loops[0].is_closed()
+    finally:
+        application.close()
+
+    assert front.loops[0].is_closed()
 
 
 def test_overlapping_archive_requests_are_serialized_without_blocking_stage_reads(
@@ -698,3 +745,4 @@ def test_non_json_backend_value_becomes_a_bounded_internal_error(tmp_path: Path)
         )
     assert status == 500
     assert payload == {"error": "response_not_json", "ok": False}
+
