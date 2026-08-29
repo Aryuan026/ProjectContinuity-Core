@@ -3,6 +3,16 @@
 All notable public changes are recorded here. Private deployment receipts,
 mutable project memory, and raw construction logs do not belong in this file.
 
+## Unreleased
+
+- Keep every direct Cognee archive request on one dedicated persistent event
+  loop. The previous request path serialized calls but created and closed a new
+  loop for each request, violating the documented Ladybug loop-affinity
+  boundary.
+- No Store, Case, receipt, tool, role, or authentication migration is required.
+  To roll back, stop the front and return to the preceding immutable release;
+  existing data and configuration remain unchanged.
+
 ## 0.1.3 — Client-neutral MCP packaging
 
 - Add `mcp-client` as the generic client-only extra for any MCP-capable coding
@@ -43,3 +53,4 @@ mutable project memory, and raw construction logs do not belong in this file.
 - Added offline Cognee relocation and single-front lifetime locking.
 - Added release-owned Agent Skill, cold-start guide, first-install manual,
   operations/restore manual, licenses, and third-party provenance.
+
