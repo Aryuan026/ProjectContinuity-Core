@@ -180,6 +180,40 @@ class FrontApplication:
         self.front = front
         self.credentials = credentials
         self._archive_lock = threading.Lock()
+        self._archive_loop = asyncio.new_event_loop()
+        self._archive_closed = False
+        self._archive_thread = threading.Thread(
+            target=self._serve_archive_loop,
+            name="project-continuity-archive",
+            daemon=True,
+        )
+        self._archive_thread.start()
+
+    def _serve_archive_loop(self) -> None:
+        asyncio.set_event_loop(self._archive_loop)
+        self._archive_loop.run_forever()
+
+    def close(self) -> None:
+        """Stop the sole archive loop after all in-flight archive work finishes."""
+
+        with self._archive_lock:
+            if self._archive_closed:
+                return
+            self._archive_closed = True
+
+            async def shutdown() -> None:
+                await self._archive_loop.shutdown_asyncgens()
+                await self._archive_loop.shutdown_default_executor()
+
+            future = asyncio.run_coroutine_threadsafe(shutdown(), self._archive_loop)
+            try:
+                future.result(timeout=5)
+            finally:
+                self._archive_loop.call_soon_threadsafe(self._archive_loop.stop)
+                self._archive_thread.join(timeout=5)
+                if self._archive_thread.is_alive():
+                    raise RuntimeError("ProjectContinuity archive loop did not stop")
+                self._archive_loop.close()
 
     def invoke(self, principal_id: str, request: Mapping[str, Any]) -> Any:
         _require_exact_keys(request, {"tool", "project_id", "arguments"}, "request")
@@ -298,10 +332,13 @@ class FrontApplication:
         """Keep persistent direct Cognee adapters on one event loop at a time."""
 
         with self._archive_lock:
+            if self._archive_closed:
+                raise RuntimeError("ProjectContinuity archive loop is closed")
             awaitable = operation()
             if timeout is not None:
                 awaitable = asyncio.wait_for(awaitable, timeout=timeout)
-            return asyncio.run(awaitable)
+            future = asyncio.run_coroutine_threadsafe(awaitable, self._archive_loop)
+            return future.result()
 
     async def _promote(
         self, principal_id: str, project_id: str, arguments: Mapping[str, Any]
@@ -362,11 +399,21 @@ def create_server(
     class Handler(_RequestHandler):
         app = application
 
-    return _LoopbackServer((host, port), Handler)
+    try:
+        return _LoopbackServer((host, port), Handler)
+    except Exception:
+        application.close()
+        raise
 
 
 class _LoopbackServer(ThreadingHTTPServer):
     daemon_threads = True
+
+    def server_close(self) -> None:
+        try:
+            self.RequestHandlerClass.app.close()
+        finally:
+            super().server_close()
 
 
 class _RequestHandler(BaseHTTPRequestHandler):
@@ -575,3 +622,4 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
+
