@@ -6,6 +6,8 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import sys
+import threading
+import time
 from types import ModuleType
 from typing import Dict, List, Optional
 
@@ -38,6 +40,11 @@ from project_continuity.receipts import (
     IdempotencyConflict,
     ReceiptStore,
     promotion_receipt_path,
+)
+from project_continuity.server import (
+    ArchiveOperationBusy,
+    ArchiveOperationTimeout,
+    _ArchiveRunner,
 )
 from project_continuity.turritopsis_adapter import project_store_path
 
@@ -213,6 +220,25 @@ class PartialArchiveBackend(FakeCogneeBackend):
             ready=False,
         )
         raise CogneeUnavailable("simulated cognify failure after data commit")
+
+
+class BlockingArchiveBackend(FakeCogneeBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.active = 0
+        self.maximum = 0
+
+    async def upsert(self, case: CogneeCase) -> CogneeCaseRecord:
+        self.active += 1
+        self.maximum = max(self.maximum, self.active)
+        self.entered.set()
+        try:
+            await asyncio.to_thread(self.release.wait, 2)
+            return await super().upsert(case)
+        finally:
+            self.active -= 1
 
 
 @pytest.fixture
@@ -400,6 +426,81 @@ def test_same_idempotency_key_replay_returns_one_case_and_receipt(f4) -> None:
     second = asyncio.run(front.promote_stage(**dict(fields)))
     assert second == first
     assert backend.writes == 1 and len(backend.records) == 1
+
+
+def test_archive_timeout_keeps_prepared_promotion_owned_until_same_key_replay(
+    config,
+) -> None:
+    _write_store(config)
+    backend = BlockingArchiveBackend()
+    front = CognitionFront(config, cognee_backend=backend)
+    stage = front.get_stage(
+        "promoter-client", "alpha", "engineering.wakeup-case"
+    )
+    fields = {
+        "principal_id": "promoter-client",
+        "project_id": "alpha",
+        "stage_id": "engineering.wakeup-case",
+        "source_revision": stage["revision"],
+        "idempotency_key": "archive-timeout-replay-1",
+        "provenance": (_ref("github", "timeout-source"),),
+        "review_authority": _ref("github", "timeout-review"),
+    }
+    runner = _ArchiveRunner()
+    try:
+        with pytest.raises(ArchiveOperationTimeout):
+            runner.run(
+                lambda: front.promote_stage(**fields),
+                timeout=0.01,
+                capability="case_archive",
+            )
+        assert backend.entered.wait(1)
+        prepared = ReceiptStore(
+            promotion_receipt_path(config.paths.state_root)
+        ).find("alpha", fields["idempotency_key"])
+        assert prepared is not None and prepared.state == "prepared"
+        assert backend.active == backend.maximum == 1
+
+        with pytest.raises(ArchiveOperationBusy):
+            runner.run(
+                lambda: front.promote_stage(**dict(fields)),
+                timeout=0.1,
+                capability="case_archive",
+            )
+        assert backend.writes == 0
+
+        backend.release.set()
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                receipt = runner.run(
+                    lambda: front.promote_stage(**dict(fields)),
+                    timeout=1,
+                    capability="case_archive",
+                )
+            except ArchiveOperationBusy:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+                continue
+            break
+
+        assert receipt["status"] == "committed"
+        assert receipt["promotion_id"] == prepared.promotion_id
+        assert receipt["backend_data_id"] == cognee_data_id(
+            "alpha", prepared.promotion_id
+        )
+        assert backend.writes == 1
+        assert len(backend.records) == 1
+        assert backend.active == 0
+        assert backend.maximum == 1
+        after = front.get_stage(
+            "promoter-client", "alpha", "engineering.wakeup-case"
+        )
+        assert after["revision"] == stage["revision"]
+    finally:
+        backend.release.set()
+        runner.close()
 
 
 def test_committed_replay_survives_later_source_stage_progress(f4) -> None:

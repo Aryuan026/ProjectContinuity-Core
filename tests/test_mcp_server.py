@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
+import json
+from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from project_continuity.client import FrontClientError
-from project_continuity.mcp_server import SERVER_INSTRUCTIONS, build_mcp
+from project_continuity.client import FrontClient, FrontClientError
+from project_continuity.mcp_server import SERVER_INSTRUCTIONS, build_mcp, build_parser
 
 
 class FakeClient:
@@ -121,3 +125,52 @@ def test_mcp_surfaces_only_the_typed_front_receipt() -> None:
         )
     assert "capability_unavailable" in str(caught.value)
     assert "provider path" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("status", "backend_error"),
+    [(503, "backend_busy"), (504, "backend_timeout")],
+)
+def test_mcp_tool_error_preserves_archive_in_progress_state(
+    monkeypatch, status: int, backend_error: str
+) -> None:
+    payload = {
+        "ok": False,
+        "error": backend_error,
+        "capability": "case_archive",
+        "operation_state": "in_progress",
+        "private": "/srv/private/archive",
+    }
+
+    def fail(*_args, **_kwargs):
+        raise HTTPError(
+            "http://127.0.0.1:8766/v1/invoke",
+            status,
+            "Unavailable",
+            {},
+            BytesIO(json.dumps(payload).encode("utf-8")),
+        )
+
+    monkeypatch.setattr("project_continuity.client._open_front", fail)
+    client = FrontClient(
+        "http://127.0.0.1:8766/v1/invoke",
+        "local-reader-token-00000000000000000001",
+        timeout=90,
+    )
+    with pytest.raises(ToolError) as caught:
+        _run(
+            build_mcp(client).call_tool(
+                "get",
+                {"project_id": "alpha", "promotion_id": "promotion:" + "a" * 64},
+            )
+        )
+
+    receipt = str(caught.value)
+    assert '"error": "%s"' % backend_error in receipt
+    assert '"operation_state": "in_progress"' in receipt
+    assert "/srv/" not in receipt
+
+
+def test_mcp_default_transport_timeout_outlives_archive_deadline() -> None:
+    args = build_parser().parse_args(["--token-file", str(Path("reader.token"))])
+    assert args.timeout == 90.0

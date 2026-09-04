@@ -39,9 +39,12 @@ MCP tool / HTTP client
        -> NativeCogneeBackend for Case get/search/promotion
 ```
 
-Archive calls are serialized on one dedicated, persistent event loop inside the
-front process because the direct Ladybug backend owns asynchronous state that
-must not cross concurrent event loops. Stage requests remain concurrent.
+Archive calls run on one dedicated, persistent event loop inside the front
+process because the direct Ladybug backend owns asynchronous state that must not
+cross concurrent event loops. A request deadline does not pretend to cancel a
+non-cancellable archive worker: that worker retains sole backend ownership and
+new archive requests receive a typed busy receipt until it reaches a truthful
+terminal state. Stage requests and health checks remain concurrent.
 
 ## Promotion lifecycle
 
@@ -73,4 +76,3 @@ Code/release bytes, current Store data, archive data, runtime state, logs, and
 credentials belong in separate roots. Cognee writable paths are derived from
 the operator config and must not resolve inside the release. The front should
 remain loopback-only unless an independently authenticated gateway is reviewed.
-

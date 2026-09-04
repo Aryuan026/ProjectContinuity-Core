@@ -5,6 +5,13 @@ mutable project memory, and raw construction logs do not belong in this file.
 
 ## Unreleased
 
+- Bound archive acquisition and execution with one server-owned request
+  deadline. A timed-out non-cancellable worker remains the sole backend owner;
+  retries receive a typed busy receipt until it finishes, while Stage and health
+  routes stay available.
+- Preserve the exact safe `operation_state=in_progress` marker through the
+  client and MCP error surface. The MCP transport timeout now outlives the
+  server archive deadline so this uncertainty reaches the Agent.
 - Keep every direct Cognee archive request on one dedicated persistent event
   loop. The previous request path serialized calls but created and closed a new
   loop for each request, violating the documented Ladybug loop-affinity
@@ -53,4 +60,3 @@ mutable project memory, and raw construction logs do not belong in this file.
 - Added offline Cognee relocation and single-front lifetime locking.
 - Added release-owned Agent Skill, cold-start guide, first-install manual,
   operations/restore manual, licenses, and third-party provenance.
-

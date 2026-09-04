@@ -154,11 +154,15 @@ args = [
 ]
 cwd = "/absolute/release"
 startup_timeout_sec = 10
-tool_timeout_sec = 30
+tool_timeout_sec = 120
 ```
 
 For another Agent runtime, use its native stdio MCP configuration with the same
-command and arguments. Do not wrap the five tools in a second tool server.
+command and arguments. Keep the Agent runtime's outer tool deadline strictly
+longer than the MCP adapter's 90-second front timeout. This lets the canonical
+front return its bounded 60-second archive timeout together with
+`operation_state=in_progress`; an outer timeout must not erase that recovery
+state. Do not wrap the five tools in a second tool server.
 
 ## 7. Install the Skill
 
