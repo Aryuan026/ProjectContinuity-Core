@@ -176,6 +176,71 @@ def test_front_client_preserves_typed_error_without_token_or_endpoint(monkeypatc
     assert "127.0.0.1" not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    ("status", "backend_error"),
+    [(503, "backend_busy"), (504, "backend_timeout")],
+)
+def test_front_client_preserves_archive_in_progress_state(
+    monkeypatch, status: int, backend_error: str
+) -> None:
+    payload = {
+        "ok": False,
+        "error": backend_error,
+        "capability": "case_archive",
+        "operation_state": "in_progress",
+        "private": "/srv/private/archive",
+    }
+
+    def fail(*_args, **_kwargs):
+        raise HTTPError(
+            "http://127.0.0.1:8766/v1/invoke",
+            status,
+            "Unavailable",
+            {},
+            BytesIO(json.dumps(payload).encode("utf-8")),
+        )
+
+    monkeypatch.setattr("project_continuity.client._open_front", fail)
+    client = FrontClient("http://127.0.0.1:8766/v1/invoke", TOKEN)
+    with pytest.raises(FrontClientError) as caught:
+        client.invoke("get", "alpha", {"promotion_id": "promotion:" + "a" * 64})
+
+    assert caught.value.receipt == {
+        "ok": False,
+        "error": backend_error,
+        "status": status,
+        "capability": "case_archive",
+        "operation_state": "in_progress",
+    }
+    assert "/srv/" not in str(caught.value)
+
+
+def test_front_client_filters_unreviewed_operation_states(monkeypatch) -> None:
+    payload = {
+        "ok": False,
+        "error": "backend_timeout",
+        "capability": "case_archive",
+        "operation_state": "completed",
+    }
+
+    def fail(*_args, **_kwargs):
+        raise HTTPError(
+            "http://127.0.0.1:8766/v1/invoke",
+            504,
+            "Timeout",
+            {},
+            BytesIO(json.dumps(payload).encode("utf-8")),
+        )
+
+    monkeypatch.setattr("project_continuity.client._open_front", fail)
+    with pytest.raises(FrontClientError) as caught:
+        FrontClient("http://127.0.0.1:8766/v1/invoke", TOKEN).invoke(
+            "get", "alpha", {"promotion_id": "promotion:" + "a" * 64}
+        )
+
+    assert "operation_state" not in caught.value.receipt
+
+
 def test_front_client_closes_malformed_http_error_body(monkeypatch) -> None:
     def fail(*_args, **_kwargs):
         raise HTTPError(

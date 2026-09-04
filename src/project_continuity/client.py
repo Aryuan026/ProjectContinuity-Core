@@ -15,6 +15,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+MAX_FRONT_TIMEOUT_SECONDS = 120
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{32,256}$")
 
 
@@ -83,7 +84,7 @@ class FrontClient:
             raise FrontClientError({"ok": False, "error": "malformed_token"})
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
             raise FrontClientError({"ok": False, "error": "invalid_timeout"})
-        if timeout <= 0 or timeout > 60:
+        if timeout <= 0 or timeout > MAX_FRONT_TIMEOUT_SECONDS:
             raise FrontClientError({"ok": False, "error": "invalid_timeout"})
         self._token = token
         self.timeout = float(timeout)
@@ -184,4 +185,6 @@ def _error_receipt(status: int, value: Any) -> Dict[str, Any]:
             item = value.get(key)
             if isinstance(item, str) and 0 < len(item) <= 2_000:
                 receipt[key] = item
+        if value.get("operation_state") == "in_progress":
+            receipt["operation_state"] = "in_progress"
     return receipt

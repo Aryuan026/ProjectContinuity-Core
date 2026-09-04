@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 from contextlib import contextmanager
 import http.client
 import json
@@ -197,7 +198,7 @@ def test_failed_server_construction_closes_the_archive_loop(monkeypatch) -> None
     with pytest.raises(OSError, match="injected bind failure"):
         create_server(object(), Path("unused"), port=0, front=FakeFront())
 
-    assert seen["application"]._archive_loop.is_closed()
+    assert seen["application"]._archive_runner.loop.is_closed()
 
 
 def test_bearer_identity_routes_all_five_tools_without_actor_claim(tmp_path: Path) -> None:
@@ -288,7 +289,43 @@ def test_archive_requests_reuse_one_event_loop_and_close_it() -> None:
     assert front.loops[0].is_closed()
 
 
-def test_overlapping_archive_requests_are_serialized_without_blocking_stage_reads(
+def test_precompleted_archive_future_cannot_deadlock_callback_registration(
+    monkeypatch,
+) -> None:
+    runner = __import__(
+        "project_continuity.server", fromlist=["_ArchiveRunner"]
+    )._ArchiveRunner()
+
+    async def value(result):
+        return result
+
+    def precompleted(awaitable, _loop):
+        awaitable.close()
+        future = Future()
+        future.set_result("first")
+        return future
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(
+                "project_continuity.server.asyncio.run_coroutine_threadsafe",
+                precompleted,
+            )
+            assert runner.run(
+                lambda: value("ignored"),
+                timeout=0.1,
+                capability="case_archive",
+            ) == "first"
+        assert runner.run(
+            lambda: value("second"),
+            timeout=1,
+            capability="case_archive",
+        ) == "second"
+    finally:
+        runner.close()
+
+
+def test_overlapping_archive_request_is_refused_until_first_worker_finishes(
     tmp_path: Path,
 ) -> None:
     class OverlapFront(FakeFront):
@@ -375,13 +412,25 @@ def test_overlapping_archive_requests_are_serialized_without_blocking_stage_read
         first.start()
         assert front.first_entered.wait(timeout=1)
         second.start()
-        time.sleep(0.05)
+        second.join(timeout=1)
+        assert not second.is_alive()
         assert front.archive_entries == 1
         stage = _invoke(port, TOKENS["promoter-client"], "list", {})
         assert stage[0] == 200
         front.release_first.set()
         first.join(timeout=3)
-        second.join(timeout=3)
+        retry = _invoke(
+            port,
+            TOKENS["promoter-client"],
+            "promote",
+            {
+                "stage_id": "project.handoff",
+                "source_revision": "a" * 16,
+                "idempotency_key": "overlapping-case",
+                "provenance": [_ref()],
+                "review_authority": _ref(),
+            },
+        )
     finally:
         front.release_first.set()
         server.shutdown()
@@ -391,7 +440,15 @@ def test_overlapping_archive_requests_are_serialized_without_blocking_stage_read
     assert not first.is_alive()
     assert not second.is_alive()
     assert results["search"][0] == 200
-    assert results["promote"][0] == 200
+    assert results["promote"][0] == 503
+    assert results["promote"][1] == {
+        "ok": False,
+        "error": "backend_busy",
+        "capability": "case_archive",
+        "operation_state": "in_progress",
+    }
+    assert retry[0] == 200
+    assert front.archive_entries == 2
     assert front.maximum_archive_calls == 1
 
 
@@ -416,33 +473,115 @@ def test_unconfigured_case_semantic_search_is_typed_and_bounded(tmp_path: Path) 
     assert "provider path" not in json.dumps(payload)
 
 
-def test_case_search_timeout_is_typed_without_stopping_the_front(
+def test_archive_timeout_retains_ownership_and_keeps_stage_and_health_live(
     monkeypatch, tmp_path: Path
 ) -> None:
-    with _running(tmp_path) as (port, front):
-        async def slow(*_args, **_kwargs):
-            import asyncio
+    class BlockingArchiveFront(FakeFront):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.finished = threading.Event()
+            self.state_lock = threading.Lock()
+            self.active = 0
+            self.maximum = 0
 
-            await asyncio.sleep(1)
+        async def search_cases(self, principal_id, project_id, query, **arguments):
+            with self.state_lock:
+                self.active += 1
+                self.maximum = max(self.maximum, self.active)
+            self.entered.set()
+            try:
+                await asyncio.to_thread(self.release.wait, 2)
+                return [
+                    self._result(
+                        "search_cases",
+                        principal_id,
+                        project_id,
+                        query=query,
+                        **arguments,
+                    )
+                ]
+            finally:
+                with self.state_lock:
+                    self.active -= 1
+                self.finished.set()
 
-        front.search_cases = slow
-        monkeypatch.setattr(
-            "project_continuity.server.CASE_SEARCH_TIMEOUT_SECONDS", 0.01
-        )
+    config = load_config(write_config(tmp_path / "runtime"))
+    credentials = _credentials(config, tmp_path / "credentials")
+    front = BlockingArchiveFront()
+    server = create_server(config, credentials, port=0, front=front)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    port = server.server_address[1]
+    monkeypatch.setattr(
+        "project_continuity.server.CASE_SEARCH_TIMEOUT_SECONDS", 0.02
+    )
+    try:
         status, payload, _headers = _invoke(
             port,
             TOKENS["reader-client"],
             "search",
             {"scope": "cases", "query": "故障", "match": "semantic"},
         )
+        assert front.entered.wait(1)
+        assert status == 504
+        assert payload == {
+            "ok": False,
+            "error": "backend_timeout",
+            "capability": "case_search",
+            "operation_state": "in_progress",
+        }
+
+        started = time.monotonic()
+        busy = _invoke(
+            port,
+            TOKENS["reader-client"],
+            "get",
+            {"promotion_id": "promotion:" + "a" * 64},
+        )
+        current = _invoke(
+            port,
+            TOKENS["reader-client"],
+            "get",
+            {"stage_id": "project.handoff"},
+        )
+        listed = _invoke(port, TOKENS["reader-client"], "list", {})
         health = _request(port, "GET", "/health")
-    assert status == 504
-    assert payload == {
-        "ok": False,
-        "error": "backend_timeout",
-        "capability": "case_search",
-    }
-    assert health[0] == 200
+        elapsed = time.monotonic() - started
+
+        assert busy[0] == 503
+        assert busy[1] == {
+            "ok": False,
+            "error": "backend_busy",
+            "capability": "case_archive",
+            "operation_state": "in_progress",
+        }
+        assert current[0] == listed[0] == health[0] == 200
+        assert elapsed < 1
+        assert front.active == front.maximum == 1
+
+        front.release.set()
+        assert front.finished.wait(1)
+        deadline = time.monotonic() + 1
+        while True:
+            retry = _invoke(
+                port,
+                TOKENS["reader-client"],
+                "get",
+                {"promotion_id": "promotion:" + "a" * 64},
+            )
+            if retry[0] == 200 or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        assert retry[0] == 200
+        assert front.active == 0
+        assert front.maximum == 1
+    finally:
+        front.release.set()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
 
 
 def test_missing_or_wrong_token_is_rejected_without_invoking_front(tmp_path: Path) -> None:
@@ -745,4 +884,3 @@ def test_non_json_backend_value_becomes_a_bounded_internal_error(tmp_path: Path)
         )
     assert status == 500
     assert payload == {"error": "response_not_json", "ok": False}
-

@@ -84,3 +84,11 @@ def test_client_install_is_agent_neutral_with_legacy_alias() -> None:
     assert "no client product is the permission authority" in (
         ROOT / "AI_START_HERE.md"
     ).read_text(encoding="utf-8")
+
+
+def test_agent_tool_timeout_outlives_mcp_and_front_deadlines() -> None:
+    install = (ROOT / "INSTALL.md").read_text(encoding="utf-8")
+    assert "tool_timeout_sec = 120" in install
+    assert "MCP adapter's 90-second front timeout" in install
+    assert "bounded 60-second archive timeout" in install
+    assert "operation_state=in_progress" in install
