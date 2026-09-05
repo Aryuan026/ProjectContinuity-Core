@@ -37,6 +37,7 @@ MCP tool / HTTP client
        -> TurritopsisAdapter for Stage list/search/get/update
        -> PromotionCoordinator for reviewed archive writes
        -> NativeCogneeBackend for Case get/search/promotion
+       -> IntegratedTruthPlane for Graphify/OpenSpec/TeamAI/GitHub reads
 ```
 
 Archive calls run on one dedicated, persistent event loop inside the front
@@ -66,9 +67,12 @@ same project dataset.
 
 ## External authorities
 
-Graphify, OpenSpec, TeamAI/Git, GitHub, event systems, and personal-memory systems
-are not copied into ProjectContinuity. A Case may cite their StableRefs; whether
-those external objects are current or authoritative remains their owner's job.
+Graphify, OpenSpec, TeamAI/Git, and GitHub remain independent authorities, but
+their reviewed read adapters are routed through the same `list/search/get`
+surface. Cross-layer search returns partitioned results and explicit coverage;
+exact `get(resource_ref=...)` resolves the cited object at its owner. Event and
+personal-memory systems remain reference-only. ProjectContinuity never copies
+these layers into a second truth store.
 
 ## Storage and deployment
 

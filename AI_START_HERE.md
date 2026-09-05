@@ -50,10 +50,13 @@ The JSON object permits only `tool`, `project_id`, and `arguments`.
 
 1. Call `list` for the operator-approved project ID.
 2. Call `get(stage_id="project.handoff")`.
-3. Verify code claims against the cited checkout, Graphify, and delivery evidence.
-4. Search current Stages only for a specific unresolved question.
-5. Use keyword Case search for history; it needs no vector provider.
-6. Use semantic search only when embeddings are intentionally configured.
+3. Use `search(scope="auto")` for a cross-layer question; inspect its coverage
+   instead of treating a missing authority as an empty result.
+4. Resolve returned code, decision, collaboration, or delivery StableRefs with
+   `get(resource_ref=...)` before relying on them.
+5. Use focused Stage search for a current-only question and keyword Case search
+   for history; neither needs a vector provider.
+6. Use semantic Case search only when embeddings are intentionally configured.
 
 After durable work, do one normal handoff update:
 

@@ -12,6 +12,7 @@ from .evidence import StableRef
 GRAPHIFY_PRODUCER = "graphify@0.9.48"
 OPENSPEC_PRODUCER = "openspec@1.10.0"
 TEAMAI_PRODUCER = "teamai-cli@0.20.0"
+GITHUB_PRODUCER = "github-rest-v3"
 OPENSPEC_STATES = frozenset({"proposal", "current", "superseded", "rejected"})
 TEAMAI_REVIEWED_KINDS = frozenset(
     {"assignment", "learning", "minutes", "workstream"}
@@ -158,6 +159,109 @@ def teamai_reviewed_ref(
     )
 
 
+def github_delivery_ref(
+    *,
+    project_id: str,
+    revision: str,
+    artifact_digest: str,
+    repo_url: str,
+    subject: str,
+) -> StableRef:
+    """Reference one exact delivered Git commit without copying repository truth."""
+
+    _identifier(project_id, "project_id")
+    git_revision = _git_revision(revision, "revision")
+    _sha256_digest(artifact_digest, "artifact_digest")
+    remote = _validated_repository_url(repo_url, "repo_url")
+    _delivery_subject(subject)
+    return StableRef(
+        authority="github",
+        object_id="commit:%s:%s" % (project_id, git_revision),
+        version=git_revision,
+        digest=artifact_digest,
+        producer=GITHUB_PRODUCER,
+        provenance=(
+            ("repo_url", remote),
+            ("subject", subject),
+        ),
+        projection="delivered-commit",
+    )
+
+
+def github_pull_request_ref(
+    *,
+    project_id: str,
+    pull_request: int,
+    merge_revision: str,
+    artifact_digest: str,
+    repo_url: str,
+    subject: str,
+) -> StableRef:
+    """Reference one merged PR verified by the GitHub authority."""
+
+    _identifier(project_id, "project_id")
+    revision = _git_revision(merge_revision, "merge_revision")
+    _sha256_digest(artifact_digest, "artifact_digest")
+    remote = _validated_repository_url(repo_url, "repo_url")
+    if type(pull_request) is not int or pull_request < 1:
+        raise ValueError("pull_request must be a positive integer")
+    _delivery_subject(subject)
+    return StableRef(
+        authority="github",
+        object_id="pull-request:%s:%d" % (project_id, pull_request),
+        version=revision,
+        digest=artifact_digest,
+        producer=GITHUB_PRODUCER,
+        provenance=(
+            ("merge_revision", revision),
+            ("pull_request", str(pull_request)),
+            ("repo_url", remote),
+            ("subject", subject),
+        ),
+        projection="merged-pull-request",
+    )
+
+
+def github_release_ref(
+    *,
+    project_id: str,
+    tag: str,
+    revision: str,
+    artifact_digest: str,
+    repo_url: str,
+) -> StableRef:
+    """Reference one published GitHub Release and its resolved commit."""
+
+    _identifier(project_id, "project_id")
+    commit = _git_revision(revision, "revision")
+    _sha256_digest(artifact_digest, "artifact_digest")
+    remote = _validated_repository_url(repo_url, "repo_url")
+    if (
+        not isinstance(tag, str)
+        or not tag
+        or tag != tag.strip()
+        or len(tag) > 200
+        or tag.startswith(("-", "/"))
+        or tag.endswith(("/", "."))
+        or ".." in tag
+        or "//" in tag
+        or any(ord(character) < 33 or ord(character) == 127 for character in tag)
+    ):
+        raise ValueError("tag must be a bounded Git ref component")
+    return StableRef(
+        authority="github",
+        object_id="release:%s:%s" % (project_id, tag),
+        version=commit,
+        digest=artifact_digest,
+        producer=GITHUB_PRODUCER,
+        provenance=(
+            ("repo_url", remote),
+            ("tag", tag),
+        ),
+        projection="delivered-release-tag",
+    )
+
+
 def _identifier(value: object, field: str) -> str:
     if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
         raise ValueError("%s must be a stable identifier" % field)
@@ -206,3 +310,15 @@ def _teamai_relative_path(value: object) -> str:
     if not value.startswith(allowed_prefixes):
         raise ValueError("relative_path is outside TeamAI reviewed knowledge")
     return value
+
+
+def _delivery_subject(subject: object) -> str:
+    if (
+        not isinstance(subject, str)
+        or not subject
+        or subject != subject.strip()
+        or len(subject) > 300
+        or any(ord(character) < 32 for character in subject)
+    ):
+        raise ValueError("subject must be bounded single-line text")
+    return subject

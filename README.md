@@ -35,14 +35,13 @@ coding agent / reviewer / assistant
               |
         MCP or HTTP client
               |
-   authenticated five-tool front
-        /                 \
-Turritopsis Store      Cognee archive
-current Stages          reviewed Cases
-        |                  |
-        +------ stable references ------>
-          OpenSpec / Graphify / TeamAI / GitHub /
-          external events / personal-memory authority
+             authenticated five-tool front
+          /          |                 \
+Turritopsis Store  Cognee archive   authority read plane
+ current Stages    reviewed Cases   Graphify / OpenSpec /
+                                      TeamAI / GitHub
+          \          |                 /
+           +---- exact StableRefs ----+
 ```
 
 ProjectContinuity is the map and handoff desk. It is not the owner of every
@@ -113,9 +112,11 @@ list(project_id)
   -> update(expected_revision, mode=replace)
 ```
 
-Use `search(scope="cases", match="keyword")` when the current handoff points to
-an old failure or design history. Use `get(promotion_id=...)` when the Case ID is
-already known.
+Use `search(scope="auto")` when the question crosses current state, history,
+code, decisions, collaboration, and delivery; its coverage reports which owners
+were actually consulted. Resolve returned StableRefs with
+`get(resource_ref=...)`. Use `search(scope="cases", match="keyword")` for a
+focused historical lookup and `get(promotion_id=...)` when the Case ID is known.
 
 ## Promotion and optional AI providers
 

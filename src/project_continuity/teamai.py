@@ -44,6 +44,32 @@ EXPLICIT_ENVIRONMENT = {
     "TEAMAI_HOOKS_DISABLED": "1",
     "TEAMAI_RECALL_DISABLED": "1",
 }
+TEAMAI_SELF_MODE_GITIGNORE = """\
+# teamai single-repo mode — machine-local state (never commit)
+config.yaml
+state.json
+token
+.update-lock
+.reports-lock
+.bootstrap-lock
+env.sh
+env.local
+usage.jsonl
+known-skills.json
+search-index.json
+dashboard/
+# git worktrees for reports (orphan branch) and knowledge PRs
+reports-wt/
+knowledge-wt/
+# report data lives on the teamai-reports orphan branch, not on main
+members/
+sessions/
+votes/
+stats/
+pending-review.jsonl
+
+# Knowledge (skills/, rules/, docs/, learnings/) is intentionally committed to main.
+"""
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _PUSHED_BRANCH = re.compile(r"\bBranch ([A-Za-z0-9._/-]+) has been pushed\b")
 
@@ -131,6 +157,7 @@ def render_teamai_guard_documents(
         "hooks": [],
     }
     return {
+        ".teamai/.gitignore": TEAMAI_SELF_MODE_GITIGNORE,
         ".teamai/teamai.yaml": _json_document(team_config),
         ".teamai/hooks/hooks.yaml": _json_document(hooks_config),
     }
@@ -157,6 +184,10 @@ def verify_teamai_guard_documents(
         raise TeamAIContractError("expected_reviewers must be unique")
     team = _load_json(root / ".teamai/teamai.yaml")
     hooks = _load_json(root / ".teamai/hooks/hooks.yaml")
+    if _load_bytes(root / ".teamai/.gitignore") != TEAMAI_SELF_MODE_GITIGNORE.encode(
+        "utf-8"
+    ):
+        raise TeamAIContractError("TeamAI self-mode gitignore changed")
     try:
         repo_url = _repository_url(team["repo"], "teamai.repo")
         sharing = team["sharing"]
@@ -429,6 +460,19 @@ def _load_json(path: Path) -> Mapping[str, Any]:
     if not isinstance(value, dict):
         raise TeamAIContractError("managed JSON document must be an object: %s" % path)
     return value
+
+
+def _load_bytes(path: Path) -> bytes:
+    if not path.is_file() or path.is_symlink():
+        raise TeamAIContractError(
+            "managed byte document is absent or unsafe: %s" % path
+        )
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise TeamAIContractError(
+            "cannot read managed byte document: %s" % path
+        ) from exc
 
 
 def _reject_duplicate_json_keys(pairs: Sequence[Tuple[str, Any]]) -> Dict[str, Any]:

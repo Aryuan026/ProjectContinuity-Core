@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 import importlib.metadata
 import os
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Mapping, Optional, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from .evidence import sanitize_evidence
@@ -58,6 +58,8 @@ class CogneeCaseRecord:
 
 
 class CogneeBackend(Protocol):
+    async def status(self, project_id: str) -> Mapping[str, Any]: ...
+
     async def lookup(
         self, project_id: str, promotion_id: str
     ) -> Optional[CogneeCaseRecord]: ...
@@ -98,6 +100,43 @@ class NativeCogneeBackend:
         _assert_native_runtime()
         record = await self._lookup_record(project_id, promotion_id)
         return record if record is not None and record.ready else None
+
+    async def status(self, project_id: str) -> Mapping[str, Any]:
+        """Count provider-free readable and incomplete Cases for one project."""
+
+        _assert_native_runtime()
+        _user, dataset = await self._user_and_dataset(project_id, create=False)
+        if dataset is None:
+            return {
+                "dataset_name": project_dataset_name(project_id),
+                "partial_cases": 0,
+                "ready_cases": 0,
+            }
+        from cognee.modules.data.methods.get_dataset_data import get_dataset_data
+
+        ready = 0
+        partial = 0
+        for row in await get_dataset_data(dataset.id):
+            if getattr(row, "label", None) != CASE_LABEL:
+                continue
+            metadata = (
+                row.external_metadata
+                if isinstance(row.external_metadata, dict)
+                else {}
+            )
+            if metadata.get("project_id") != project_id or not metadata.get(
+                "promotion_id"
+            ):
+                continue
+            if cognee_row_is_ready(row, dataset.id):
+                ready += 1
+            else:
+                partial += 1
+        return {
+            "dataset_name": project_dataset_name(project_id),
+            "partial_cases": partial,
+            "ready_cases": ready,
+        }
 
     async def _lookup_record(
         self, project_id: str, promotion_id: str

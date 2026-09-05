@@ -9,8 +9,11 @@ from urllib.error import HTTPError
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
+from project_continuity.authority_layers import READ_DEADLINE_SECONDS
 from project_continuity.client import FrontClient, FrontClientError
 from project_continuity.mcp_server import SERVER_INSTRUCTIONS, build_mcp, build_parser
+from project_continuity.server import INTEGRATED_HISTORY_TIMEOUT_SECONDS
+from project_continuity.truth_plane import EXTERNAL_LAYERS
 
 
 class FakeClient:
@@ -107,6 +110,31 @@ def test_mcp_routes_the_native_five_tools_without_actor_or_principal_claims() ->
     assert all("actor" not in call[2] and "principal_id" not in call[2] for call in client.calls)
 
 
+def test_mcp_defaults_to_integrated_search_and_forwards_exact_resource_ref() -> None:
+    client = FakeClient()
+    server = build_mcp(client)
+    reference = {
+        "authority": "graphify",
+        "object_id": "graph:alpha:snapshot-one",
+        "version": "a" * 40,
+        "digest": "sha256:" + "b" * 64,
+        "producer": "graphify@0.9.48",
+        "provenance": {"project_id": "alpha"},
+    }
+
+    _run(server.call_tool("search", {"project_id": "alpha", "query": "调用链"}))
+    _run(
+        server.call_tool(
+            "get", {"project_id": "alpha", "resource_ref": reference}
+        )
+    )
+
+    assert client.calls == [
+        ("search", "alpha", {"query": "调用链"}),
+        ("get", "alpha", {"resource_ref": reference}),
+    ]
+
+
 def test_mcp_surfaces_only_the_typed_front_receipt() -> None:
     client = FakeClient()
     client.error = FrontClientError(
@@ -174,3 +202,7 @@ def test_mcp_tool_error_preserves_archive_in_progress_state(
 def test_mcp_default_transport_timeout_outlives_archive_deadline() -> None:
     args = build_parser().parse_args(["--token-file", str(Path("reader.token"))])
     assert args.timeout == 90.0
+    assert args.timeout > (
+        len(EXTERNAL_LAYERS) * READ_DEADLINE_SECONDS
+        + INTEGRATED_HISTORY_TIMEOUT_SECONDS
+    )

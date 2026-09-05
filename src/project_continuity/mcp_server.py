@@ -15,12 +15,13 @@ from .client import FrontClient, FrontClientError, load_private_token_file
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:8766/v1/invoke"
 SERVER_INSTRUCTIONS = (
-    "ProjectContinuity preserves current project handoff and reviewed engineering "
-    "history. Start with list, then get project.handoff. Search only when the "
-    "question needs more context. Update the handoff with its exact revision after "
+    "ProjectContinuity routes current project cognition, reviewed engineering "
+    "history, exact code reality, formal decisions, collaboration, and delivery "
+    "evidence without replacing their authorities. Start with list, then get "
+    "project.handoff. Use search scope=auto for cross-layer questions and resolve "
+    "returned StableRefs with get. Update the handoff with its exact revision after "
     "durable work. Promote only an already-reviewed exact revision with provenance. "
-    "Stages and Cases reference—but never replace—OpenSpec, Graphify, TeamAI, GitHub, "
-    "external event, or personal-memory authorities. Exactly five tools are exposed."
+    "Exactly five tools are exposed."
 )
 
 
@@ -30,8 +31,9 @@ def build_mcp(client: FrontClient) -> FastMCP:
     @server.tool(
         name="list",
         description=(
-            "Orient yourself in a project before acting. List its current Stages; "
-            "then read project.handoff instead of asking the human to replay history."
+            "Orient yourself before acting. Return current Stages plus per-layer "
+            "availability and exact pointers; then read project.handoff instead of "
+            "asking the human to replay history."
         ),
         annotations=_read_annotations("List project Stages"),
         structured_output=True,
@@ -43,10 +45,9 @@ def build_mcp(client: FrontClient) -> FastMCP:
     @server.tool(
         name="search",
         description=(
-            "Follow a specific question across current Stages or reviewed historical "
-            "Cases. Omit match for the no-vector defaults; Case keyword search works "
-            "without an embedding provider. Use match=semantic only when vector "
-            "retrieval is intentionally configured."
+            "Follow one question across current, history, code, decisions, "
+            "collaboration, and delivery. scope=auto is the integrated route and "
+            "returns coverage. Case keyword search does not require vectors."
         ),
         annotations=_read_annotations("Search project continuity"),
         structured_output=True,
@@ -54,16 +55,17 @@ def build_mcp(client: FrontClient) -> FastMCP:
     def search(
         project_id: str,
         query: str,
-        scope: str = "stages",
+        scope: str = "auto",
         match: str = "",
         current: str = "",
         stage_id: str = "",
         context: int = 2,
         limit: int = 8,
         case_sensitive: bool = False,
+        selector: str = "",
     ) -> Dict[str, Any]:
         arguments: Dict[str, Any] = {"query": query}
-        if scope != "stages":
+        if scope != "auto":
             arguments["scope"] = scope
         if match:
             arguments["match"] = match
@@ -77,26 +79,32 @@ def build_mcp(client: FrontClient) -> FastMCP:
             arguments["limit"] = limit
         if case_sensitive:
             arguments["case_sensitive"] = True
+        if selector:
+            arguments["selector"] = selector
         return _invoke(client, "search", project_id, arguments)
 
     @server.tool(
         name="get",
         description=(
-            "Read one exact current Stage or reviewed Case. Start a resumed project "
-            "with stage_id=project.handoff; use promotion_id when a historical Case "
-            "identity is already known."
+            "Read one exact current Stage, reviewed Case, Graph snapshot, OpenSpec "
+            "decision, TeamAI collaboration object, or delivery object. Use "
+            "resource_ref with a StableRef returned by list or search."
         ),
         annotations=_read_annotations("Get an exact Stage or Case"),
         structured_output=True,
     )
     def get(
-        project_id: str, stage_id: str = "", promotion_id: str = ""
+        project_id: str,
+        stage_id: str = "",
+        promotion_id: str = "",
+        resource_ref: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         arguments = {
             key: value
             for key, value in (
                 ("stage_id", stage_id),
                 ("promotion_id", promotion_id),
+                ("resource_ref", resource_ref),
             )
             if value
         }

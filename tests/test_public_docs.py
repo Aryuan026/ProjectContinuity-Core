@@ -80,6 +80,8 @@ def test_client_install_is_agent_neutral_with_legacy_alias() -> None:
     assert "--extra mcp-client" in install
     assert "coding Agent or MCP-capable client" in skill
     assert "Use when Codex joins" not in skill
+    assert 'search(scope="auto")' in skill
+    assert "get(resource_ref=...)" in skill
     assert "not a hierarchy between Agent products" in readme
     assert "no client product is the permission authority" in (
         ROOT / "AI_START_HERE.md"

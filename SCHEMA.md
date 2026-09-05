@@ -45,8 +45,12 @@ Unknown top-level keys are rejected. Tool arguments are also closed per tool.
 
 - `list`: optional `current`.
 - `search`: required `query`; optional `scope`, `match`, `current`, `stage_id`,
-  `context`, `limit`, `case_sensitive`.
-- `get`: exactly one of `stage_id` or `promotion_id`.
+  `context`, `limit`, `case_sensitive`, `selector`. The default `auto` scope
+  reports partitioned current/history/code/decisions/collaboration/delivery
+  results and explicit per-layer coverage. Focused scopes remain available.
+- `get`: exactly one of `stage_id`, `promotion_id`, or `resource_ref`. A
+  `resource_ref` is a complete StableRef previously returned by `list` or
+  `search`; the front routes it back to its owning authority.
 - `update`: `stage_id`, `body`, `expected_revision`; optional `mode`.
 - `promote`: exact source revision, stable idempotency key, provenance,
   review authority, and optional `corrects`/`supersedes` Case IDs.

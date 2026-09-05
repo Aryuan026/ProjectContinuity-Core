@@ -52,10 +52,91 @@ class FakeFront:
     def list_stages(self, principal_id, project_id, current=""):
         return self._result("list", principal_id, project_id, current=current)
 
+    def list_project(self, principal_id, project_id, current=""):
+        result = self._result("list", principal_id, project_id, current=current)
+        result["truth_plane"] = {
+            "coverage": {
+                "consulted": ["code", "decisions", "collaboration", "delivery"],
+                "matched": [],
+                "unavailable": {},
+                "failed": {},
+                "complete": True,
+            }
+        }
+        return result
+
+    async def list_project_complete(
+        self, principal_id, project_id, current="", *, base=None
+    ):
+        result = dict(base or self.list_project(principal_id, project_id, current))
+        result["history_archive"] = {"available": True}
+        result["coverage"] = {
+            "consulted": [
+                "current",
+                "history",
+                "code",
+                "decisions",
+                "collaboration",
+                "delivery",
+            ],
+            "matched": ["current", "history"],
+            "unavailable": {},
+            "failed": {},
+            "complete": True,
+        }
+        return result
+
     def search_stages(self, principal_id, project_id, query, **arguments):
         return self._result(
             "search_stages", principal_id, project_id, query=query, **arguments
         )
+
+    def search_project_base(
+        self, principal_id, project_id, query, *, scope, **arguments
+    ):
+        result = self._result(
+            "search_project_base",
+            principal_id,
+            project_id,
+            query=query,
+            scope=scope,
+            **arguments,
+        )
+        result.update(
+            {
+                "ok": True,
+                "project_id": project_id,
+                "query": query,
+                "scope": scope,
+                "results": {"current": [], "code": []},
+                "coverage": {
+                    "consulted": ["current", "code"],
+                    "matched": [],
+                    "unavailable": {},
+                    "failed": {},
+                    "complete": True,
+                },
+            }
+        )
+        return result
+
+    async def complete_project_search(
+        self, base, principal_id, project_id, query, **arguments
+    ):
+        self._result(
+            "complete_project_search",
+            principal_id,
+            project_id,
+            query=query,
+            **arguments,
+        )
+        result = dict(base)
+        result["results"] = {**base["results"], "history": []}
+        result["coverage"] = {
+            **base["coverage"],
+            "consulted": ["current", "history", "code"],
+        }
+        return result
 
     async def search_cases(self, principal_id, project_id, query, **arguments):
         return [
@@ -72,6 +153,11 @@ class FakeFront:
     async def get_case(self, principal_id, project_id, promotion_id):
         return self._result(
             "get_case", principal_id, project_id, promotion_id=promotion_id
+        )
+
+    def get_resource(self, principal_id, project_id, reference):
+        return self._result(
+            "get_resource", principal_id, project_id, reference=reference
         )
 
     def update_stage(
@@ -145,12 +231,18 @@ def _request(port: int, method: str, path: str, *, token=None, body=None):
 
 
 def _invoke(port: int, token: str, tool: str, arguments: dict):
+    return _invoke_project(port, token, "alpha", tool, arguments)
+
+
+def _invoke_project(
+    port: int, token: str, project_id: str, tool: str, arguments: dict
+):
     return _request(
         port,
         "POST",
         "/v1/invoke",
         token=token,
-        body={"tool": tool, "project_id": "alpha", "arguments": arguments},
+        body={"tool": tool, "project_id": project_id, "arguments": arguments},
     )
 
 
@@ -206,7 +298,7 @@ def test_bearer_identity_routes_all_five_tools_without_actor_claim(tmp_path: Pat
         token = TOKENS["promoter-client"]
         calls = [
             _invoke(port, token, "list", {}),
-            _invoke(port, token, "search", {"query": "交接"}),
+            _invoke(port, token, "search", {"scope": "stages", "query": "交接"}),
             _invoke(port, token, "get", {"stage_id": "project.handoff"}),
             _invoke(
                 port,
@@ -241,6 +333,30 @@ def test_bearer_identity_routes_all_five_tools_without_actor_claim(tmp_path: Pat
     ]
     assert {call[1] for call in front.calls} == {"promoter-client"}
     assert all("claimed_actor" not in call[3] for call in front.calls)
+
+
+def test_default_search_and_exact_get_route_the_integrated_read_plane(
+    tmp_path: Path,
+) -> None:
+    reference = _ref("graphify")
+    with _running(tmp_path) as (port, front):
+        token = TOKENS["reader-client"]
+        searched = _invoke(port, token, "search", {"query": "调用链"})
+        fetched = _invoke(port, token, "get", {"resource_ref": reference})
+
+    assert searched[0] == fetched[0] == 200
+    assert searched[1]["result"]["scope"] == "auto"
+    assert searched[1]["result"]["coverage"]["consulted"] == [
+        "current",
+        "history",
+        "code",
+    ]
+    assert [call[0] for call in front.calls] == [
+        "search_project_base",
+        "complete_project_search",
+        "get_resource",
+    ]
+    assert front.calls[-1][3]["reference"] == reference
 
 
 def test_case_get_and_search_reuse_the_existing_get_search_tools(tmp_path: Path) -> None:
@@ -570,6 +686,109 @@ def test_overlapping_archive_request_is_refused_until_first_worker_finishes(
     assert front.maximum_archive_calls == 1
 
 
+def test_blocked_external_list_does_not_hold_archive_or_health(
+    tmp_path: Path,
+) -> None:
+    class BlockingExternalFront(FakeFront):
+        def __init__(self) -> None:
+            super().__init__()
+            self.external_entered = threading.Event()
+            self.release_external = threading.Event()
+
+        def list_project(self, principal_id, project_id, current=""):
+            if project_id == "alpha":
+                self.external_entered.set()
+                self.release_external.wait(3)
+            return super().list_project(principal_id, project_id, current)
+
+    config = load_config(write_config(tmp_path / "runtime"))
+    credentials = _credentials(config, tmp_path / "credentials")
+    front = BlockingExternalFront()
+    server = create_server(config, credentials, port=0, front=front)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    port = server.server_address[1]
+    results = {}
+
+    blocked = threading.Thread(
+        target=lambda: results.update(
+            blocked=_invoke_project(
+                port, TOKENS["writer-client"], "alpha", "list", {}
+            )
+        )
+    )
+    blocked.start()
+    assert front.external_entered.wait(1)
+    try:
+        started = time.monotonic()
+        other_list = _invoke_project(
+            port, TOKENS["writer-client"], "beta", "list", {}
+        )
+        case_get = _invoke(
+            port,
+            TOKENS["writer-client"],
+            "get",
+            {"promotion_id": "promotion:" + "a" * 64},
+        )
+        health = _request(port, "GET", "/health")
+        elapsed = time.monotonic() - started
+    finally:
+        front.release_external.set()
+        blocked.join(timeout=3)
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
+
+    assert other_list[0] == case_get[0] == health[0] == 200
+    assert elapsed < 1
+    assert results["blocked"][0] == 200
+
+
+def test_complete_list_timeout_preserves_external_truth_and_reports_history_gap(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class BlockingHistoryFront(FakeFront):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        async def list_project_complete(self, *_args, **_kwargs):
+            self.entered.set()
+            await asyncio.to_thread(self.release.wait, 2)
+            return {"unexpected": "late result"}
+
+    config = load_config(write_config(tmp_path / "runtime"))
+    credentials = _credentials(config, tmp_path / "credentials")
+    front = BlockingHistoryFront()
+    server = create_server(config, credentials, port=0, front=front)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    port = server.server_address[1]
+    monkeypatch.setattr(
+        "project_continuity.server.INTEGRATED_HISTORY_TIMEOUT_SECONDS", 0.02
+    )
+    try:
+        response = _invoke(port, TOKENS["reader-client"], "list", {})
+        assert front.entered.wait(1)
+        assert response[0] == 200
+        result = response[1]["result"]
+        assert result["truth_plane"]["coverage"]["complete"] is True
+        assert result["history_archive"] == {
+            "available": False,
+            "reason": "history_archive_timeout",
+        }
+        assert result["coverage"]["unavailable"] == {
+            "history": "history_archive_timeout"
+        }
+        assert _request(port, "GET", "/health")[0] == 200
+    finally:
+        front.release.set()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
+
+
 def test_unconfigured_case_semantic_search_is_typed_and_bounded(tmp_path: Path) -> None:
     with _running(tmp_path) as (port, front):
         async def unavailable(*_args, **_kwargs):
@@ -676,6 +895,9 @@ def test_archive_timeout_retains_ownership_and_keeps_stage_and_health_live(
             "operation_state": "in_progress",
         }
         assert current[0] == listed[0] == health[0] == 200
+        assert listed[1]["result"]["coverage"]["unavailable"]["history"] == (
+            "history_archive_busy"
+        )
         assert elapsed < 1
         assert front.active == front.maximum == 1
 
@@ -996,7 +1218,7 @@ def test_nonfinite_json_number_is_rejected(tmp_path: Path) -> None:
 
 def test_non_json_backend_value_becomes_a_bounded_internal_error(tmp_path: Path) -> None:
     with _running(tmp_path) as (port, front):
-        front.list_stages = lambda *_args, **_kwargs: {"score": float("nan")}
+        front.list_project = lambda *_args, **_kwargs: {"score": float("nan")}
         status, payload, _headers = _invoke(
             port, TOKENS["reader-client"], "list", {}
         )

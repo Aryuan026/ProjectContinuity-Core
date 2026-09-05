@@ -1,6 +1,6 @@
 ---
 name: project-continuity
-description: Resume, hand off, or investigate a software project through ProjectContinuity's current Stage memory and reviewed engineering Cases. Use when a coding Agent or MCP-capable client joins a project without prior chat context, needs the current handoff or historical fault chain, must update durable project cognition after work, or explicitly promote a reviewed exact revision. Also use for cross-device or cross-agent coding continuity without replaying conversations.
+description: Resume, hand off, or investigate a software project through ProjectContinuity's current Stages, reviewed engineering Cases, and stable references to code, decisions, collaboration, and delivery evidence. Use when a coding Agent or MCP-capable client joins a project without prior chat context, needs the current handoff or a cross-layer fault chain, must update durable project cognition after work, or explicitly promote a reviewed exact revision. Also use for cross-device or cross-agent coding continuity without replaying conversations.
 ---
 
 # Project Continuity
@@ -10,9 +10,9 @@ Use the ProjectContinuity MCP as a routing and handoff layer. Keep live code, fo
 ## Arrive by the shortest path
 
 1. Identify the operator-approved `project_id`; do not invent one from a directory name.
-2. Call `list`, then `get(stage_id="project.handoff")`.
-3. Treat the handoff as routing context. Verify code claims against the current checkout and its cited Graphify/GitHub evidence before changing code.
-4. Use `search(scope="stages")` only for a specific unresolved question, then `get` the owning Stage.
+2. Call `list`, inspect its per-layer coverage, then `get(stage_id="project.handoff")`.
+3. Treat the handoff as routing context. For a cross-layer question, call `search(scope="auto")`, inspect coverage, and resolve relevant code, decision, collaboration, or delivery StableRefs with `get(resource_ref=...)` before relying on them.
+4. Use `search(scope="stages")` only for a current-only unresolved question, then `get` the owning Stage.
 5. For history, prefer exact `get(promotion_id="promotion:...")` when the handoff gives an identity. Otherwise use `search(scope="cases", match="keyword")`; this path needs no vector provider.
 6. Use Case `match="semantic"` only when semantic retrieval materially helps. If it returns `capability_unavailable`, continue with keyword search and exact get rather than retrying.
 
