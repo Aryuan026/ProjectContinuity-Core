@@ -25,12 +25,18 @@ def test_teamai_receipt_prepare_commit_and_exact_replay(config) -> None:
         request_digest=digest,
         source_revision="b" * 40,
     )
-    committed = store.commit(
+    published = store.publish_branch(
         replay,
         branch="teamai/push/writer-agent/20260905-120000",
         head_revision="c" * 40,
+    )
+    pr_created = store.record_pull_request(
+        published,
         pull_request=11,
         pull_request_url="https://github.com/example/alpha/pull/11",
+    )
+    committed = store.commit(
+        pr_created,
         review_state="open",
     )
     final, final_created = store.prepare(
@@ -43,6 +49,8 @@ def test_teamai_receipt_prepare_commit_and_exact_replay(config) -> None:
     assert created is True
     assert replay_created is final_created is False
     assert prepared == replay
+    assert published["state"] == "branch_published"
+    assert pr_created["state"] == "pr_created"
     assert final == committed
     assert public_teamai_receipt(final, changed=False)["operation_id"] == (
         "authority:" + "a" * 64

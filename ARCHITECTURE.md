@@ -83,7 +83,11 @@ pattern but not its lock. A 60-second request deadline can report an unfinished
 write without cancelling it; the MCP and host deadlines remain 90 and 120
 seconds so that typed state reaches the Agent. TeamAI additionally freezes a
 durable request receipt, runs the donor against an exact-source clone whose
-fetch cannot chase newer remote main, and commits only after GitHub/Git readback.
+fetch cannot chase newer remote main, records branch and PR transitions, creates
+the PR through the existing GitHub authority when the donor can only push, and
+commits only after immutable PR-head and Git readback. The donor-owned learning
+filename carries the complete request digest as a 50-character base-36 marker,
+so recovery cannot adopt another request's same-body branch.
 
 Managed delivery/OpenSpec/TeamAI checkouts and private bindings are installed or
 fast-forwarded only through the stopped-front operator commands `truth-setup`

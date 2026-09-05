@@ -13,7 +13,7 @@ import tempfile
 from typing import Any, Dict, Mapping, Tuple
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_RECEIPT_BYTES = 64 * 1024
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -39,6 +39,7 @@ class TeamAIReceiptStore:
         expected = {
             "actor": actor,
             "branch": None,
+            "branch_published_at": None,
             "committed_at": None,
             "head_revision": None,
             "operation": "contribute",
@@ -46,6 +47,7 @@ class TeamAIReceiptStore:
             "prepared_at": _now(),
             "project_id": project_id,
             "pull_request": None,
+            "pull_request_created_at": None,
             "pull_request_url": None,
             "request_digest": request_digest,
             "review_state": None,
@@ -70,34 +72,85 @@ class TeamAIReceiptStore:
         self._write(path, expected)
         return expected, True
 
-    def commit(
+    def publish_branch(
         self,
         receipt: Mapping[str, Any],
         *,
         branch: str,
         head_revision: str,
-        pull_request: int,
-        pull_request_url: str,
-        review_state: str,
     ) -> Dict[str, Any]:
-        path = self._path(receipt["project_id"], receipt["request_digest"])
-        current = self._read(
-            path, receipt["project_id"], receipt["request_digest"]
-        )
-        if current["state"] == "committed":
+        current = self._current(receipt)
+        if current["state"] != "prepared":
+            _same(current, "branch", branch)
+            _same(current, "head_revision", head_revision)
             return current
-        committed = {
+        published = {
             **current,
             "branch": branch,
-            "committed_at": _now(),
+            "branch_published_at": _now(),
             "head_revision": head_revision,
+            "state": "branch_published",
+        }
+        self._write(self._path(receipt["project_id"], receipt["request_digest"]), published)
+        return published
+
+    def record_pull_request(
+        self,
+        receipt: Mapping[str, Any],
+        *,
+        pull_request: int,
+        pull_request_url: str,
+    ) -> Dict[str, Any]:
+        current = self._current(receipt)
+        if current["state"] in {"pr_created", "committed"}:
+            _same(current, "pull_request", pull_request)
+            _same(current, "pull_request_url", pull_request_url)
+            return current
+        if current["state"] != "branch_published":
+            raise TeamAIReceiptError("teamai_receipt_transition_invalid")
+        created = {
+            **current,
             "pull_request": pull_request,
+            "pull_request_created_at": _now(),
             "pull_request_url": pull_request_url,
+            "state": "pr_created",
+        }
+        self._write(self._path(receipt["project_id"], receipt["request_digest"]), created)
+        return created
+
+    def commit(
+        self,
+        receipt: Mapping[str, Any],
+        *,
+        review_state: str,
+    ) -> Dict[str, Any]:
+        current = self._current(receipt)
+        if current["state"] == "committed":
+            _same(current, "review_state", review_state)
+            return current
+        if current["state"] != "pr_created":
+            raise TeamAIReceiptError("teamai_receipt_transition_invalid")
+        committed = {
+            **current,
+            "committed_at": _now(),
             "review_state": review_state,
             "state": "committed",
         }
-        self._write(path, committed)
+        self._write(
+            self._path(receipt["project_id"], receipt["request_digest"]),
+            committed,
+        )
         return committed
+
+    def _current(self, receipt: Mapping[str, Any]) -> Dict[str, Any]:
+        try:
+            project_id = receipt["project_id"]
+            request_digest = receipt["request_digest"]
+        except KeyError as exc:
+            raise TeamAIReceiptError("teamai_receipt_identity_invalid") from exc
+        return self._read(
+            self._path(project_id, request_digest), project_id, request_digest
+        )
 
     def _path(self, project_id: str, request_digest: str) -> Path:
         if not _PROJECT.fullmatch(project_id) or not _DIGEST.fullmatch(request_digest):
@@ -208,6 +261,7 @@ def _validate(value: Any, project_id: str, request_digest: str) -> None:
     fields = {
         "actor",
         "branch",
+        "branch_published_at",
         "committed_at",
         "head_revision",
         "operation",
@@ -215,6 +269,7 @@ def _validate(value: Any, project_id: str, request_digest: str) -> None:
         "prepared_at",
         "project_id",
         "pull_request",
+        "pull_request_created_at",
         "pull_request_url",
         "request_digest",
         "review_state",
@@ -230,37 +285,73 @@ def _validate(value: Any, project_id: str, request_digest: str) -> None:
         or value["project_id"] != project_id
         or value["request_digest"] != request_digest
         or value["operation_id"] != _operation_id(request_digest)
-        or value["state"] not in {"prepared", "committed"}
+        or value["state"]
+        not in {"prepared", "branch_published", "pr_created", "committed"}
         or not isinstance(value["actor"], str)
         or not value["actor"]
         or not isinstance(value["prepared_at"], str)
         or not _COMMIT.fullmatch(value["source_revision"])
     ):
         raise TeamAIReceiptError("teamai_receipt_malformed")
-    committed_fields = (
-        "branch",
-        "committed_at",
-        "head_revision",
-        "pull_request",
-        "pull_request_url",
-        "review_state",
-    )
     if value["state"] == "prepared":
-        if any(value[field] is not None for field in committed_fields):
+        if any(
+            value[field] is not None
+            for field in (
+                "branch",
+                "branch_published_at",
+                "committed_at",
+                "head_revision",
+                "pull_request",
+                "pull_request_created_at",
+                "pull_request_url",
+                "review_state",
+            )
+        ):
             raise TeamAIReceiptError("teamai_receipt_malformed")
         return
     if (
         not isinstance(value["branch"], str)
         or not value["branch"]
-        or not isinstance(value["committed_at"], str)
+        or not isinstance(value["branch_published_at"], str)
         or not _COMMIT.fullmatch(value["head_revision"] or "")
-        or type(value["pull_request"]) is not int
+    ):
+        raise TeamAIReceiptError("teamai_receipt_malformed")
+    if value["state"] == "branch_published":
+        if any(
+            value[field] is not None
+            for field in (
+                "committed_at",
+                "pull_request",
+                "pull_request_created_at",
+                "pull_request_url",
+                "review_state",
+            )
+        ):
+            raise TeamAIReceiptError("teamai_receipt_malformed")
+        return
+    if (
+        type(value["pull_request"]) is not int
         or value["pull_request"] < 1
+        or not isinstance(value["pull_request_created_at"], str)
         or not isinstance(value["pull_request_url"], str)
+        or not value["pull_request_url"]
+    ):
+        raise TeamAIReceiptError("teamai_receipt_malformed")
+    if value["state"] == "pr_created":
+        if value["committed_at"] is not None or value["review_state"] is not None:
+            raise TeamAIReceiptError("teamai_receipt_malformed")
+        return
+    if (
+        not isinstance(value["committed_at"], str)
         or not isinstance(value["review_state"], str)
         or not value["review_state"]
     ):
         raise TeamAIReceiptError("teamai_receipt_malformed")
+
+
+def _same(receipt: Mapping[str, Any], field: str, expected: Any) -> None:
+    if receipt.get(field) != expected:
+        raise TeamAIReceiptError("teamai_receipt_conflict")
 
 
 def _private_directory(path: Path) -> None:

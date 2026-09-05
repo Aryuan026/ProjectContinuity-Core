@@ -205,6 +205,51 @@ class GitHubAuthorityResolver:
             raise GitHubResolverError("github_pull_request_malformed")
         return result
 
+    def create_collaboration_pull_request(
+        self,
+        repo_url: str,
+        *,
+        head_ref: str,
+        base_ref: str,
+        subject: str,
+        body: str,
+        deadline: float | None = None,
+    ) -> Mapping[str, Any]:
+        """Create one same-repository PR through the existing GitHub authority."""
+
+        if (
+            not _safe_ref(head_ref)
+            or not _safe_ref(base_ref)
+            or not isinstance(subject, str)
+            or not subject
+            or subject != subject.strip()
+            or len(subject) > 256
+            or "\n" in subject
+            or "\r" in subject
+            or not isinstance(body, str)
+            or len(body.encode("utf-8")) > 100_000
+            or "\x00" in body
+        ):
+            raise GitHubResolverError("github_pull_request_malformed")
+        repo = self.repository(repo_url)
+        payload = self._request(
+            repo,
+            "pulls",
+            deadline=deadline,
+            method="POST",
+            payload={
+                "base": base_ref,
+                "body": body,
+                "head": head_ref,
+                "title": subject,
+            },
+        )
+        if not isinstance(payload, dict):
+            raise GitHubResolverError("github_pull_request_malformed")
+        return _collaboration_pull_request(
+            payload, "%s/%s" % (repo.owner, repo.name)
+        )
+
     def releases(
         self, repo_url: str, *, deadline: float | None = None
     ) -> Sequence[Mapping[str, Any]]:
@@ -246,6 +291,17 @@ class GitHubAuthorityResolver:
         *,
         deadline: float | None,
     ) -> Any:
+        return self._request(repo, route, deadline=deadline, method="GET")
+
+    def _request(
+        self,
+        repo: GitHubRepository,
+        route: str,
+        *,
+        deadline: float | None,
+        method: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> Any:
         timeout = _remaining(deadline, self.timeout_seconds)
         token = _read_token(self.token_file)
         url = "%s/repos/%s/%s/%s" % (
@@ -254,15 +310,26 @@ class GitHubAuthorityResolver:
             quote(repo.name, safe=""),
             route,
         )
+        content = None
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": "Bearer " + token,
+            "User-Agent": "ProjectContinuity/0.1",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if payload is not None:
+            content = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            headers["Content-Type"] = "application/json"
         request = Request(
             url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": "Bearer " + token,
-                "User-Agent": "ProjectContinuity/0.1",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-            method="GET",
+            data=content,
+            headers=headers,
+            method=method,
         )
         try:
             response = self._opener.open(request, timeout=timeout)
@@ -275,6 +342,8 @@ class GitHubAuthorityResolver:
         except HTTPError as exc:
             if exc.code == 404:
                 raise GitHubResolverError("github_object_unavailable") from exc
+            if exc.code == 422 and method == "POST":
+                raise GitHubResolverError("github_pull_request_conflict") from exc
             raise GitHubResolverUnavailable("github_authority_unavailable") from exc
         except (OSError, TimeoutError, URLError) as exc:
             raise GitHubResolverUnavailable("github_authority_unavailable") from exc
@@ -284,6 +353,20 @@ class GitHubAuthorityResolver:
             return json.loads(content.decode("utf-8"), object_pairs_hook=_unique_object)
         except (UnicodeDecodeError, json.JSONDecodeError, GitHubResolverError) as exc:
             raise GitHubResolverError("github_response_malformed") from exc
+
+
+def _safe_ref(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and value
+        and len(value) <= 240
+        and value == value.strip()
+        and not value.startswith(("/", "-"))
+        and not value.endswith(("/", "."))
+        and ".." not in value
+        and "//" not in value
+        and not any(ord(character) < 32 or ord(character) == 127 for character in value)
+    )
 
 
 def canonical_digest(value: Mapping[str, Any]) -> str:

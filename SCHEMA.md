@@ -107,7 +107,11 @@ it never follows a newer remote target during recovery.
 TeamAI contribution receipts are owner-private JSON records under
 `state_root/authority/teamai/<project_id>/`. `prepared` freezes the authenticated
 principal-derived actor, exact source revision, and canonical authority request
-digest before donor side effects. `committed` adds the single GitHub PR, branch,
-head revision, and review state only after exact Git/GitHub readback. Exact
-replay returns the same `authority:<digest>` operation identity; it never starts
-a second contribution merely because the first HTTP response was lost.
+digest before donor side effects. `branch_published` freezes the donor's exact
+branch and head; `pr_created` freezes the GitHub PR identity; `committed` adds
+the review state only after exact Git/GitHub readback. The donor-generated
+learning path begins with a 50-character base-36 encoding of the receipt's
+complete SHA-256 request digest. Exact replay returns the same
+`authority:<digest>` operation identity, resumes the first unfinished
+transition, and verifies committed work through the immutable PR head even if
+the source branch has since been deleted.

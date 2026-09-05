@@ -30,8 +30,13 @@ Do not call an installation usable because `/health` responds.
   retained worker reaches terminal state.
 - TeamAI contributions freeze the authenticated actor, request, and source
   revision in a private prepared receipt. The donor runs from an exact-source
-  checkout, and a committed receipt is accepted only after GitHub and Git agree
-  on the single branch, PR, parent, content, author, and committer.
+  checkout and may stop after its native branch push; ProjectContinuity then
+  creates the PR through its existing GitHub authority. Durable branch and PR
+  transitions let a restarted front resume without creating a second
+  contribution. The donor title is an internal full-request-digest marker used
+  only to bind its learning filename; the controller supplies the human PR
+  title. A committed receipt is accepted only after GitHub and Git agree on the
+  single PR head, parent, request marker, content, author, and committer.
 - Promote only a coherent reviewed revision; reuse the same idempotency key after
   any interrupted attempt.
 

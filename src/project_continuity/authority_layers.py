@@ -654,7 +654,7 @@ class TeamAILayer:
                     )
                     return public_teamai_receipt(durable, changed=False)
 
-                reconciled = _reconcile_teamai_receipt(
+                candidate = _reconcile_teamai_receipt(
                     exact_root,
                     resolver,
                     self.binding.repo_url,
@@ -663,52 +663,50 @@ class TeamAILayer:
                     body=body,
                     base_branch=base_branch,
                 )
-                if reconciled is not None:
-                    committed = _commit_teamai_receipt(receipts, durable, reconciled)
-                    return public_teamai_receipt(committed, changed=False)
-                if not created:
-                    raise AuthorityLayerUnavailable("teamai_contribution_in_progress")
+                if candidate is None and durable["state"] == "prepared":
+                    branch = _reconcile_teamai_branch(
+                        exact_root,
+                        self.binding.repo_url,
+                        durable,
+                        body=body,
+                    )
+                    if branch is None:
+                        published = _run_teamai_contribution(
+                            node_executable=self.node_executable,
+                            entrypoint=self.entrypoint,
+                            invocation_root=invocation_root,
+                            environment=environment,
+                            request_digest=request_digest,
+                            body=body,
+                            repo_url=self.binding.repo_url,
+                        )
+                        if published.pull_request is not None:
+                            try:
+                                candidate = resolver.collaboration_pull_request(
+                                    self.binding.repo_url, published.pull_request
+                                )
+                            except GitHubResolverError as exc:
+                                raise AuthorityLayerUnavailable(
+                                    "github_authority_unavailable"
+                                ) from exc
+                        else:
+                            branch = _verified_teamai_branch(
+                                exact_root,
+                                self.binding.repo_url,
+                                published.branch,
+                                None,
+                                durable,
+                                body=body,
+                            )
+                    if candidate is None:
+                        if branch is None:
+                            raise AuthorityLayerError("teamai_publish_unverified")
+                        durable = _publish_teamai_branch(
+                            receipts, durable, branch
+                        )
 
-                contribution = invocation_root / (
-                    "contribution-"
-                    + request_digest.removeprefix("sha256:")
-                    + ".md"
-                )
-                contribution.write_text(body, encoding="utf-8")
-                contribution.chmod(0o600)
-                try:
-                    completed = _run_command(
-                        [
-                            str(self.node_executable),
-                            str(self.entrypoint),
-                            "contribute",
-                            "--file",
-                            str(contribution),
-                            "--title",
-                            title,
-                            "--scope",
-                            "project",
-                        ],
-                        cwd=invocation_root,
-                        label="TeamAI",
-                        environment=environment,
-                        timeout=WRITE_TIMEOUT_SECONDS,
-                    )
-                finally:
-                    contribution.unlink(missing_ok=True)
-                output = completed.stdout + "\n" + completed.stderr
-                try:
-                    published = classify_teamai_publish(
-                        completed.returncode,
-                        output,
-                        expected_repo_url=self.binding.repo_url,
-                    )
-                    if published.pull_request is None:
-                        raise TeamAIContractError("TeamAI did not return a pull request")
-                    candidate = resolver.collaboration_pull_request(
-                        self.binding.repo_url, published.pull_request
-                    )
-                    verified = _verified_teamai_candidate(
+                if candidate is not None:
+                    candidate = _verified_teamai_candidate(
                         exact_root,
                         self.binding.repo_url,
                         candidate,
@@ -717,14 +715,59 @@ class TeamAILayer:
                         body=body,
                         base_branch=base_branch,
                     )
-                except (GitHubResolverError, TeamAIContractError) as exc:
-                    raise AuthorityLayerError("teamai_publish_unverified") from exc
+                    durable = _publish_teamai_branch(receipts, durable, candidate)
+                    durable = _record_teamai_pull_request(
+                        receipts, durable, candidate
+                    )
+
+                if durable["state"] == "branch_published":
+                    _verified_teamai_branch(
+                        exact_root,
+                        self.binding.repo_url,
+                        durable["branch"],
+                        durable["head_revision"],
+                        durable,
+                        body=body,
+                    )
+                    if candidate is None:
+                        candidate = _reconcile_teamai_receipt(
+                            exact_root,
+                            resolver,
+                            self.binding.repo_url,
+                            durable,
+                            title=title,
+                            body=body,
+                            base_branch=base_branch,
+                        )
+                    if candidate is None:
+                        candidate = _create_teamai_pull_request(
+                            exact_root,
+                            resolver,
+                            self.binding.repo_url,
+                            durable,
+                            title=title,
+                            body=body,
+                            base_branch=base_branch,
+                        )
+                    durable = _record_teamai_pull_request(
+                        receipts, durable, candidate
+                    )
+
+                verified = _verify_teamai_receipt(
+                    exact_root,
+                    resolver,
+                    self.binding.repo_url,
+                    durable,
+                    title=title,
+                    body=body,
+                    base_branch=base_branch,
+                )
                 committed = _commit_teamai_receipt(receipts, durable, verified)
 
         _clean_checkout(root)
         if _git(root, "rev-parse", "HEAD") != revision:
             raise AuthorityLayerError("teamai_active_checkout_changed")
-        return public_teamai_receipt(committed, changed=True)
+        return public_teamai_receipt(committed, changed=created)
 
     def _root(
         self, project_id: str, *, deadline: float | None = None
@@ -1267,6 +1310,81 @@ def _isolated_teamai_checkout(
         shutil.rmtree(checkout, ignore_errors=True)
 
 
+def _run_teamai_contribution(
+    *,
+    node_executable: Path,
+    entrypoint: Path,
+    invocation_root: Path,
+    environment: Mapping[str, str],
+    request_digest: str,
+    body: str,
+    repo_url: str,
+):
+    contribution = invocation_root / (
+        "contribution-" + request_digest.removeprefix("sha256:") + ".md"
+    )
+    contribution.write_text(body, encoding="utf-8")
+    contribution.chmod(0o600)
+    try:
+        completed = _run_command(
+            [
+                str(node_executable),
+                str(entrypoint),
+                "contribute",
+                "--file",
+                str(contribution),
+                "--title",
+                _teamai_request_marker(request_digest),
+                "--scope",
+                "project",
+            ],
+            cwd=invocation_root,
+            label="TeamAI",
+            environment=environment,
+            timeout=WRITE_TIMEOUT_SECONDS,
+        )
+    finally:
+        contribution.unlink(missing_ok=True)
+    try:
+        return classify_teamai_publish(
+            completed.returncode,
+            completed.stdout + "\n" + completed.stderr,
+            expected_repo_url=repo_url,
+        )
+    except TeamAIContractError as exc:
+        raise AuthorityLayerError("teamai_publish_unverified") from exc
+
+
+def _publish_teamai_branch(
+    store: TeamAIReceiptStore,
+    receipt: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> Dict[str, Any]:
+    try:
+        return store.publish_branch(
+            receipt,
+            branch=candidate["head_ref"],
+            head_revision=candidate["head_revision"],
+        )
+    except (KeyError, TeamAIReceiptError) as exc:
+        raise AuthorityLayerError("teamai_receipt_write_failed") from exc
+
+
+def _record_teamai_pull_request(
+    store: TeamAIReceiptStore,
+    receipt: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> Dict[str, Any]:
+    try:
+        return store.record_pull_request(
+            receipt,
+            pull_request=candidate["pull_request"],
+            pull_request_url=candidate["url"],
+        )
+    except (KeyError, TeamAIReceiptError) as exc:
+        raise AuthorityLayerError("teamai_receipt_write_failed") from exc
+
+
 def _commit_teamai_receipt(
     store: TeamAIReceiptStore,
     receipt: Mapping[str, Any],
@@ -1275,10 +1393,6 @@ def _commit_teamai_receipt(
     try:
         return store.commit(
             receipt,
-            branch=candidate["head_ref"],
-            head_revision=candidate["head_revision"],
-            pull_request=candidate["pull_request"],
-            pull_request_url=candidate["url"],
             review_state=(
                 "pr_opened" if candidate["state"] == "open" else "pr_closed"
             ),
@@ -1366,6 +1480,84 @@ def _reconcile_teamai_receipt(
     return matches[0] if matches else None
 
 
+def _reconcile_teamai_branch(
+    root: Path,
+    repo_url: str,
+    receipt: Mapping[str, Any],
+    *,
+    body: str,
+) -> Mapping[str, Any] | None:
+    matches = []
+    for branch, head in _teamai_remote_branches(root, repo_url, receipt["actor"]):
+        try:
+            matches.append(
+                _verified_teamai_branch(
+                    root,
+                    repo_url,
+                    branch,
+                    head,
+                    receipt,
+                    body=body,
+                )
+            )
+        except AuthorityLayerError as exc:
+            if str(exc) not in {
+                "teamai_candidate_actor_mismatch",
+                "teamai_candidate_base_mismatch",
+                "teamai_candidate_content_mismatch",
+                "teamai_candidate_identity_mismatch",
+            }:
+                raise
+    if len(matches) > 1:
+        raise AuthorityLayerError("teamai_contribution_duplicate")
+    return matches[0] if matches else None
+
+
+def _create_teamai_pull_request(
+    root: Path,
+    resolver: GitHubAuthorityResolver,
+    repo_url: str,
+    receipt: Mapping[str, Any],
+    *,
+    title: str,
+    body: str,
+    base_branch: str,
+) -> Mapping[str, Any]:
+    try:
+        candidate = resolver.create_collaboration_pull_request(
+            repo_url,
+            head_ref=receipt["branch"],
+            base_ref=base_branch,
+            subject="[teamai] Contribute session knowledge from " + receipt["actor"],
+            body="Contribute session knowledge: " + title,
+        )
+    except GitHubResolverError as exc:
+        if str(exc) == "github_pull_request_conflict":
+            recovered = _reconcile_teamai_receipt(
+                root,
+                resolver,
+                repo_url,
+                receipt,
+                title=title,
+                body=body,
+                base_branch=base_branch,
+            )
+            if recovered is not None:
+                return recovered
+        if isinstance(exc, GitHubResolverUnavailable):
+            raise AuthorityLayerUnavailable("github_authority_unavailable") from exc
+        raise AuthorityLayerError("teamai_publish_unverified") from exc
+    return _verified_teamai_candidate(
+        root,
+        repo_url,
+        candidate,
+        receipt,
+        title=title,
+        body=body,
+        base_branch=base_branch,
+    )
+
+
 def _verified_teamai_candidate(
     root: Path,
     repo_url: str,
@@ -1390,9 +1582,46 @@ def _verified_teamai_candidate(
         or not _COMMIT.fullmatch(head)
     ):
         raise AuthorityLayerError("teamai_candidate_identity_mismatch")
-    remote_head = _teamai_remote_head(root, repo_url, branch)
-    if remote_head != head:
+    pull_request = candidate.get("pull_request")
+    if type(pull_request) is not int or pull_request < 1:
+        raise AuthorityLayerError("teamai_candidate_identity_mismatch")
+    _teamai_pull_head(root, repo_url, pull_request, head)
+    _verify_teamai_commit(root, head, receipt, body=body)
+    return candidate
+
+
+def _verified_teamai_branch(
+    root: Path,
+    repo_url: str,
+    branch: str,
+    expected_head: str | None,
+    receipt: Mapping[str, Any],
+    *,
+    body: str,
+) -> Mapping[str, Any]:
+    actor = receipt["actor"]
+    if (
+        not isinstance(branch, str)
+        or not branch.startswith("teamai/push/%s/" % actor)
+        or expected_head is not None
+        and (not isinstance(expected_head, str) or not _COMMIT.fullmatch(expected_head))
+    ):
+        raise AuthorityLayerError("teamai_candidate_identity_mismatch")
+    head = _teamai_remote_head(root, repo_url, branch)
+    if head is None or expected_head is not None and head != expected_head:
         raise AuthorityLayerError("teamai_candidate_head_mismatch")
+    _verify_teamai_commit(root, head, receipt, body=body)
+    return {"head_ref": branch, "head_revision": head}
+
+
+def _verify_teamai_commit(
+    root: Path,
+    head: str,
+    receipt: Mapping[str, Any],
+    *,
+    body: str,
+) -> None:
+    actor = receipt["actor"]
     parents = _git(root, "rev-list", "--parents", "-n", "1", head).split()
     if parents != [head, receipt["source_revision"]]:
         raise AuthorityLayerError("teamai_candidate_base_mismatch")
@@ -1403,10 +1632,15 @@ def _verified_teamai_candidate(
         ).splitlines()
         if value
     )
+    marker = _teamai_request_marker(receipt["request_digest"])
     if (
         len(changed) != 1
         or not changed[0].startswith(".teamai/learnings/")
         or not changed[0].endswith(".md")
+        or not re.fullmatch(
+            re.escape(marker) + r"-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]{0,6}\.md",
+            Path(changed[0]).name,
+        )
         or _git_bytes(root, "show", head + ":" + changed[0])
         != body.encode("utf-8")
     ):
@@ -1417,7 +1651,67 @@ def _verified_teamai_candidate(
     expected_email = actor + "@project-continuity.invalid"
     if identity != [actor, expected_email, actor, expected_email]:
         raise AuthorityLayerError("teamai_candidate_actor_mismatch")
-    return candidate
+
+
+def _teamai_request_marker(request_digest: str) -> str:
+    """Encode the complete SHA-256 request identity in TeamAI's 50-char slug."""
+
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", request_digest):
+        raise AuthorityLayerError("teamai_candidate_identity_mismatch")
+    value = int(request_digest.removeprefix("sha256:"), 16)
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    encoded = ""
+    while value:
+        value, remainder = divmod(value, len(digits))
+        encoded = digits[remainder] + encoded
+    return encoded.rjust(50, "0")
+
+
+def _teamai_remote_branches(
+    root: Path, repo_url: str, actor: str
+) -> Sequence[Tuple[str, str]]:
+    prefix = "refs/heads/teamai/push/%s/" % actor
+    output = _command(
+        ["git", "ls-remote", "--heads", repo_url, prefix + "*"],
+        cwd=root,
+        label="Git",
+        environment=_managed_git_environment(repo_url),
+        timeout=WRITE_TIMEOUT_SECONDS,
+    )
+    rows = [line for line in output.splitlines() if line]
+    if len(rows) > MAX_ITEMS:
+        raise AuthorityLayerError("teamai_remote_branches_too_many")
+    result = []
+    for row in rows:
+        fields = row.split("\t")
+        if (
+            len(fields) != 2
+            or not _COMMIT.fullmatch(fields[0])
+            or not fields[1].startswith(prefix)
+        ):
+            raise AuthorityLayerError("teamai_remote_branch_malformed")
+        result.append((fields[1].removeprefix("refs/heads/"), fields[0]))
+    return tuple(result)
+
+
+def _teamai_pull_head(
+    root: Path, repo_url: str, pull_request: int, expected_head: str
+) -> None:
+    _command(
+        [
+            "git",
+            "fetch",
+            "--no-tags",
+            repo_url,
+            "refs/pull/%d/head" % pull_request,
+        ],
+        cwd=root,
+        label="Git",
+        environment=_managed_git_environment(repo_url),
+        timeout=WRITE_TIMEOUT_SECONDS,
+    )
+    if _git(root, "rev-parse", "FETCH_HEAD") != expected_head:
+        raise AuthorityLayerError("teamai_candidate_head_mismatch")
 
 
 def _teamai_remote_head(root: Path, repo_url: str, branch: str) -> str | None:
