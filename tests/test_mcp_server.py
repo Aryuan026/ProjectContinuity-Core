@@ -271,6 +271,51 @@ def test_mcp_tool_error_preserves_archive_in_progress_state(
     assert "/srv/" not in receipt
 
 
+def test_mcp_tool_error_preserves_authority_in_progress_identity(monkeypatch) -> None:
+    operation_id = "authority:" + "b" * 64
+    payload = {
+        "ok": False,
+        "error": "backend_timeout",
+        "capability": "authority_write",
+        "operation_id": operation_id,
+        "operation_state": "in_progress",
+    }
+
+    def fail(*_args, **_kwargs):
+        raise HTTPError(
+            "http://127.0.0.1:8766/v1/invoke",
+            504,
+            "Unavailable",
+            {},
+            BytesIO(json.dumps(payload).encode("utf-8")),
+        )
+
+    monkeypatch.setattr("project_continuity.client._open_front", fail)
+    client = FrontClient(
+        "http://127.0.0.1:8766/v1/invoke",
+        "local-reader-token-00000000000000000001",
+        timeout=90,
+    )
+    with pytest.raises(ToolError) as caught:
+        _run(
+            build_mcp(client).call_tool(
+                "update",
+                {
+                    "project_id": "alpha",
+                    "target": "collaboration",
+                    "operation": "contribute",
+                    "parameters": {"title": "Bounded", "body": "Body"},
+                    "expected_revision": "a" * 40,
+                },
+            )
+        )
+
+    receipt = str(caught.value)
+    assert '"capability": "authority_write"' in receipt
+    assert '"operation_state": "in_progress"' in receipt
+    assert operation_id in receipt
+
+
 def test_mcp_default_transport_timeout_outlives_archive_deadline() -> None:
     args = build_parser().parse_args(["--token-file", str(Path("reader.token"))])
     assert args.timeout == 90.0

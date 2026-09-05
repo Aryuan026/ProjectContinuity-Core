@@ -197,9 +197,12 @@ tool_timeout_sec = 120
 For another Agent runtime, use its native stdio MCP configuration with the same
 command and arguments. Keep the Agent runtime's outer tool deadline strictly
 longer than the MCP adapter's 90-second front timeout. This lets the canonical
-front return its bounded 60-second archive timeout together with
-`operation_state=in_progress`; an outer timeout must not erase that recovery
-state. Do not wrap the five tools in a second tool server.
+front return its bounded 60-second archive or authority-write timeout together
+with `operation_state=in_progress` and, for writes, a stable `operation_id`;
+an outer timeout must not erase that recovery state. Long Graphify, OpenSpec,
+and TeamAI work remains owned by one retained server worker after that response.
+Replay the exact request rather than inventing a replacement operation. Do not
+wrap the five tools in a second tool server.
 
 ## 7. Install the Skill
 

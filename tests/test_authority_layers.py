@@ -13,11 +13,18 @@ from project_continuity.authority_layers import (
     GitHubDeliveryLayer,
     OpenSpecLayer,
     TeamAILayer,
+    _isolated_teamai_checkout,
     _isolated_worktree,
     _managed_repo,
+    _verified_teamai_candidate,
 )
 from project_continuity.managed_git import managed_git_environment
+from project_continuity.git_credential import credential_response
 from project_continuity.teamai import render_teamai_guard_documents
+from project_continuity.teamai_receipts import (
+    TeamAIReceiptStore,
+    authority_request_digest,
+)
 from project_continuity.truth_bindings import OpenSpecBinding, TeamAIBinding
 
 
@@ -69,9 +76,10 @@ def _bare_remote(tmp_path: Path, name: str, body: str) -> tuple[Path, str]:
 
 
 class FakeGitHubResolver:
-    def __init__(self, *, pulls=(), releases=()) -> None:
+    def __init__(self, *, pulls=(), releases=(), collaboration=()) -> None:
         self.pulls = tuple(pulls)
         self.release_rows = tuple(releases)
+        self.collaboration = tuple(collaboration)
 
     def commit(self, repo_url, revision, *, deadline=None):
         del repo_url, deadline
@@ -98,6 +106,18 @@ class FakeGitHubResolver:
     def release(self, repo_url, tag, *, deadline=None):
         del repo_url, deadline
         return next(row for row in self.release_rows if row["tag"] == tag)
+
+    def collaboration_pull_requests(self, repo_url, *, deadline=None):
+        del repo_url, deadline
+        return ()
+
+    def collaboration_pull_request(self, repo_url, pull_request, *, deadline=None):
+        del repo_url, deadline
+        return next(
+            row
+            for row in self.collaboration
+            if row["pull_request"] == pull_request
+        )
 
 
 def _fake_openspec(path: Path) -> Path:
@@ -160,9 +180,11 @@ if 'contribute' in sys.argv:
     }
     if any(os.environ.get(key) != value for key, value in expected.items()):
         raise SystemExit(9)
-    if os.environ.get('GIT_CONFIG_KEY_1') != 'http.https://github.com/example/alpha-team.extraheader':
+    if os.environ.get('GIT_CONFIG_KEY_1') != 'credential.helper':
         raise SystemExit(10)
-    if 'Authorization: Basic ' not in os.environ.get('GIT_CONFIG_VALUE_1', ''):
+    if os.environ.get('GIT_CONFIG_KEY_2') != 'credential.useHttpPath':
+        raise SystemExit(10)
+    if os.environ.get('GIT_CONFIG_VALUE_2') != 'true':
         raise SystemExit(10)
     config = json.loads(pathlib.Path('.teamai/config.yaml').read_text())
     reports = pathlib.Path(config['repo']['localPath']) / 'reports-wt'
@@ -419,11 +441,59 @@ def test_managed_git_environment_disables_hooks_and_composes_remote_auth(
     monkeypatch.setenv("PROJECT_CONTINUITY_GITHUB_TOKEN_FILE", str(token_file))
     remote = "https://github.com/example/private"
     authenticated = managed_git_environment(remote)
-    assert authenticated["GIT_CONFIG_COUNT"] == "2"
+    assert authenticated["GIT_CONFIG_COUNT"] == "3"
     assert authenticated["GIT_CONFIG_KEY_0"] == "core.hooksPath"
     assert authenticated["GIT_CONFIG_VALUE_0"] == os.devnull
-    assert authenticated["GIT_CONFIG_KEY_1"] == "http.%s.extraheader" % remote
-    assert authenticated["GIT_CONFIG_VALUE_1"].startswith("Authorization: Basic ")
+    assert authenticated["GIT_CONFIG_KEY_1"] == "credential.helper"
+    assert authenticated["GIT_CONFIG_KEY_2"] == "credential.useHttpPath"
+    assert authenticated["GIT_CONFIG_VALUE_2"] == "true"
+    assert "managed_github_token_value_000001" not in json.dumps(authenticated)
+
+    monkeypatch.setenv("PROJECT_CONTINUITY_MANAGED_GIT_REMOTE", remote)
+    monkeypatch.setenv(
+        "PROJECT_CONTINUITY_MANAGED_GIT_TOKEN_FILE", str(token_file)
+    )
+    approved = credential_response(
+        "get", b"protocol=https\nhost=github.com\npath=example/private\n\n"
+    )
+    foreign = credential_response(
+        "get", b"protocol=https\nhost=github.com\npath=example/other\n\n"
+    )
+    assert b"username=x-access-token" in approved
+    assert b"managed_github_token_value_000001" in approved
+    assert foreign == b""
+
+
+def test_managed_git_credential_is_scoped_to_the_exact_repository(
+    tmp_path: Path, monkeypatch
+) -> None:
+    token_dir = tmp_path / "credentials"
+    token_dir.mkdir(mode=0o700)
+    token_file = token_dir / "github.token"
+    token_file.write_text("managed_github_token_value_000001\n", encoding="ascii")
+    token_file.chmod(0o600)
+    monkeypatch.setenv("PROJECT_CONTINUITY_GITHUB_TOKEN_FILE", str(token_file))
+    environment = managed_git_environment("https://github.com/example/private")
+
+    approved = subprocess.run(
+        ["git", "credential", "fill"],
+        env=environment,
+        input=b"url=https://github.com/example/private\n\n",
+        check=False,
+        capture_output=True,
+    )
+    foreign = subprocess.run(
+        ["git", "credential", "fill"],
+        env=environment,
+        input=b"url=https://github.com/example/other\n\n",
+        check=False,
+        capture_output=True,
+    )
+
+    assert approved.returncode == 0
+    assert b"password=managed_github_token_value_000001" in approved.stdout
+    assert foreign.returncode != 0
+    assert b"managed_github_token_value_000001" not in foreign.stdout + foreign.stderr
 
 
 def test_teamai_read_deadline_includes_command_lock_wait(
@@ -701,11 +771,24 @@ def test_teamai_update_uses_derived_actor_and_write_only_remote_auth(
     _git(root, "commit", "-m", "configure TeamAI")
     entrypoint = tmp_path / "teamai.js"
     entrypoint.write_text("// fake\n", encoding="utf-8")
+    candidate = {
+        "base_ref": "main",
+        "base_revision": "0" * 40,
+        "body": "Contribute session knowledge: 统一验收",
+        "head_ref": "teamai/push/writer-agent/canary",
+        "head_revision": "1" * 40,
+        "kind": "pull_request_candidate",
+        "pull_request": 11,
+        "state": "open",
+        "subject": "[teamai] Contribute session knowledge from writer-agent",
+        "url": "https://github.com/example/alpha-team/pull/11",
+    }
     layer = TeamAILayer(
         config,
         TeamAIBinding("alpha-team", remote, ("reviewer-agent",)),
         _fake_node(tmp_path / "node-write"),
         entrypoint,
+        github_resolver=FakeGitHubResolver(collaboration=(candidate,)),
     )
     token_dir = tmp_path / "credentials"
     token_dir.mkdir(mode=0o700)
@@ -713,6 +796,10 @@ def test_teamai_update_uses_derived_actor_and_write_only_remote_auth(
     token_file.write_text("managed_github_token_value_000001\n", encoding="ascii")
     token_file.chmod(0o600)
     monkeypatch.setenv("PROJECT_CONTINUITY_GITHUB_TOKEN_FILE", str(token_file))
+    monkeypatch.setattr(
+        "project_continuity.authority_layers._verified_teamai_candidate",
+        lambda *_args, **_kwargs: candidate,
+    )
 
     receipt = layer.update(
         "writer-client",
@@ -728,14 +815,228 @@ def test_teamai_update_uses_derived_actor_and_write_only_remote_auth(
     assert receipt["source_revision"] == _git(root, "rev-parse", "HEAD")
     assert "@project-continuity.invalid" not in json.dumps(receipt, sort_keys=True)
     assert not (root / ".teamai/config.yaml").exists()
-    assert (root / ".teamai/reports-wt/donor-owned-state").is_file()
+    assert not (root / ".teamai/reports-wt").exists()
     assert _git(root, "status", "--porcelain=v1", "--untracked-files=all") == ""
+
+    replayed = layer.update(
+        "writer-client",
+        "alpha",
+        "contribute",
+        {"title": "统一验收", "body": "# 协作记录\n\n同一五工具完成路由。\n"},
+        expected_revision=_git(root, "rev-parse", "HEAD"),
+    )
+    assert replayed["changed"] is False
+    assert replayed["operation_id"] == receipt["operation_id"]
+    assert replayed["pull_request"] == receipt["pull_request"]
 
     (root / "unexpected-untracked.txt").write_text(
         "not donor state\n", encoding="utf-8"
     )
     with pytest.raises(AuthorityLayerError, match="managed_repo_is_dirty"):
         layer.status("writer-client", "alpha")
+
+
+def test_teamai_exact_checkout_cannot_chase_a_newer_remote_main(
+    tmp_path: Path,
+) -> None:
+    remote, source_revision = _bare_remote(tmp_path, "teamai-base", "source-a")
+    managed = tmp_path / "managed-teamai"
+    subprocess.run(
+        ["git", "clone", remote.as_uri(), str(managed)],
+        env=GIT_ENV,
+        check=True,
+        capture_output=True,
+    )
+    author = tmp_path / "teamai-base-author"
+    (author / "README.md").write_text("remote-b\n", encoding="utf-8")
+    _git(author, "add", "README.md")
+    _git(author, "commit", "-m", "advance remote only")
+    remote_revision = _git(author, "rev-parse", "HEAD")
+    _git(author, "push", "origin", "main")
+    assert _git(managed, "rev-parse", "HEAD") == source_revision
+    assert remote_revision != source_revision
+
+    runtime_root = tmp_path / "runtime"
+    with _isolated_teamai_checkout(
+        managed,
+        source_revision,
+        project_id="alpha",
+        actor="writer-agent",
+        push_remote=remote.as_uri(),
+        runtime_root=runtime_root,
+    ) as exact:
+        _git(exact, "fetch", "origin", "main")
+        assert _git(exact, "rev-parse", "origin/main") == source_revision
+        assert _git(exact, "remote", "get-url", "--push", "origin") == remote.as_uri()
+        assert _git(exact, "rev-parse", "HEAD") == source_revision
+
+
+def test_teamai_candidate_is_read_back_from_exact_parent_content_and_actor(
+    tmp_path: Path,
+) -> None:
+    remote, source_revision = _bare_remote(tmp_path, "teamai-candidate", "base")
+    author = tmp_path / "teamai-candidate-author"
+    branch = "teamai/push/writer-agent/20260905-120000"
+    body = "# Durable collaboration\n\nOne exact contribution.\n"
+    _git(author, "switch", "-c", branch)
+    learning = author / ".teamai/learnings/durable.md"
+    learning.parent.mkdir(parents=True)
+    learning.write_text(body, encoding="utf-8")
+    _git(author, "add", ".teamai/learnings/durable.md")
+    environment = {
+        **GIT_ENV,
+        "GIT_AUTHOR_EMAIL": "writer-agent@project-continuity.invalid",
+        "GIT_AUTHOR_NAME": "writer-agent",
+        "GIT_COMMITTER_EMAIL": "writer-agent@project-continuity.invalid",
+        "GIT_COMMITTER_NAME": "writer-agent",
+    }
+    subprocess.run(
+        ["git", "commit", "-m", "[teamai] Contribute session knowledge from writer-agent"],
+        cwd=author,
+        env=environment,
+        check=True,
+        capture_output=True,
+    )
+    head = _git(author, "rev-parse", "HEAD")
+    _git(author, "push", "origin", branch)
+    candidate = {
+        "base_ref": "main",
+        "base_revision": source_revision,
+        "body": "Contribute session knowledge: Durable",
+        "head_ref": branch,
+        "head_revision": head,
+        "kind": "pull_request_candidate",
+        "pull_request": 17,
+        "state": "open",
+        "subject": "[teamai] Contribute session knowledge from writer-agent",
+        "url": "https://github.com/example/teamai-candidate/pull/17",
+    }
+    receipt = {"actor": "writer-agent", "source_revision": source_revision}
+
+    assert _verified_teamai_candidate(
+        author,
+        remote.as_uri(),
+        candidate,
+        receipt,
+        title="Durable",
+        body=body,
+        base_branch="main",
+    ) == candidate
+
+
+def test_teamai_prepared_receipt_reconciles_without_invoking_donor_again(
+    config, tmp_path: Path, monkeypatch
+) -> None:
+    remote = "https://github.com/example/alpha-team"
+    root = _repo(config.paths.data_root / "team/alpha", remote)
+    for relative, content in render_teamai_guard_documents(
+        team_id="alpha-team", repo_url=remote, reviewers=("reviewer-agent",)
+    ).items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _git(root, "add", ".teamai")
+    _git(root, "commit", "-m", "configure TeamAI")
+    revision = _git(root, "rev-parse", "HEAD")
+    title = "Lost response"
+    body = "# Recovered\n\nDo not create a second PR.\n"
+    digest = authority_request_digest(
+        principal_id="writer-client",
+        project_id="alpha",
+        target="collaboration",
+        operation="contribute",
+        parameters={"body": body, "title": title},
+        expected_revision=revision,
+    )
+    TeamAIReceiptStore(config.paths.state_root).prepare(
+        actor="writer-agent",
+        project_id="alpha",
+        request_digest=digest,
+        source_revision=revision,
+    )
+    candidate = {
+        "base_ref": "main",
+        "base_revision": revision,
+        "body": "Contribute session knowledge: " + title,
+        "head_ref": "teamai/push/writer-agent/recovered",
+        "head_revision": "f" * 40,
+        "kind": "pull_request_candidate",
+        "pull_request": 23,
+        "state": "open",
+        "subject": "[teamai] Contribute session knowledge from writer-agent",
+        "url": "https://github.com/example/alpha-team/pull/23",
+    }
+    marker = tmp_path / "donor-was-called"
+    node = tmp_path / "node-never"
+    node.write_text(
+        "#!/bin/sh\nprintf called > %s\nexit 99\n" % marker,
+        encoding="utf-8",
+    )
+    node.chmod(0o700)
+    entrypoint = tmp_path / "teamai.js"
+    entrypoint.write_text("// fake\n", encoding="utf-8")
+    layer = TeamAILayer(
+        config,
+        TeamAIBinding("alpha-team", remote, ("reviewer-agent",)),
+        node,
+        entrypoint,
+        github_resolver=FakeGitHubResolver(collaboration=(candidate,)),
+    )
+    monkeypatch.setattr(
+        layer.github_resolver,
+        "collaboration_pull_requests",
+        lambda *_args, **_kwargs: (candidate,),
+    )
+    monkeypatch.setattr(
+        "project_continuity.authority_layers._verified_teamai_candidate",
+        lambda *_args, **_kwargs: candidate,
+    )
+
+    result = layer.update(
+        "writer-client",
+        "alpha",
+        "contribute",
+        {"title": title, "body": body},
+        expected_revision=revision,
+    )
+
+    assert result["changed"] is False
+    assert result["operation_id"] == "authority:" + digest.removeprefix("sha256:")
+    assert result["pull_request"] == 23
+    assert not marker.exists()
+
+    unresolved_title = "No authority object yet"
+    unresolved_body = "# Pending\n\nNever launch a second donor after prepare.\n"
+    unresolved_digest = authority_request_digest(
+        principal_id="writer-client",
+        project_id="alpha",
+        target="collaboration",
+        operation="contribute",
+        parameters={"body": unresolved_body, "title": unresolved_title},
+        expected_revision=revision,
+    )
+    TeamAIReceiptStore(config.paths.state_root).prepare(
+        actor="writer-agent",
+        project_id="alpha",
+        request_digest=unresolved_digest,
+        source_revision=revision,
+    )
+    monkeypatch.setattr(
+        layer.github_resolver,
+        "collaboration_pull_requests",
+        lambda *_args, **_kwargs: (),
+    )
+    with pytest.raises(
+        AuthorityLayerUnavailable, match="teamai_contribution_in_progress"
+    ):
+        layer.update(
+            "writer-client",
+            "alpha",
+            "contribute",
+            {"title": unresolved_title, "body": unresolved_body},
+            expected_revision=revision,
+        )
+    assert not marker.exists()
 
 
 def test_delivery_git_search_and_exact_get(config) -> None:

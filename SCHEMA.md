@@ -103,3 +103,11 @@ private state root. They freeze each selected layer's before/target/after state
 and a controller-owned Git ref before the first checkout advances. A partial
 refresh is replayed with the exact same project and layer set until it converges;
 it never follows a newer remote target during recovery.
+
+TeamAI contribution receipts are owner-private JSON records under
+`state_root/authority/teamai/<project_id>/`. `prepared` freezes the authenticated
+principal-derived actor, exact source revision, and canonical authority request
+digest before donor side effects. `committed` adds the single GitHub PR, branch,
+head revision, and review state only after exact Git/GitHub readback. Exact
+replay returns the same `authority:<digest>` operation identity; it never starts
+a second contribution merely because the first HTTP response was lost.

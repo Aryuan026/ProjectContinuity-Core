@@ -24,6 +24,14 @@ Do not call an installation usable because `/health` responds.
   same authenticated `update` tool with the owning target, its supported
   operation, and the exact authority revision. GitHub delivery remains
   read-only through ProjectContinuity.
+- Treat `backend_timeout` plus `operation_state=in_progress` as an unfinished
+  authority operation, not a failed write. Preserve its `operation_id`, keep
+  health and Stage reads available, and replay the exact request after the
+  retained worker reaches terminal state.
+- TeamAI contributions freeze the authenticated actor, request, and source
+  revision in a private prepared receipt. The donor runs from an exact-source
+  checkout, and a committed receipt is accepted only after GitHub and Git agree
+  on the single branch, PR, parent, content, author, and committer.
 - Promote only a coherent reviewed revision; reuse the same idempotency key after
   any interrupted attempt.
 

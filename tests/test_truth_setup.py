@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import base64
 import stat
 
 import pytest
@@ -241,44 +240,33 @@ def test_github_git_transport_uses_only_the_private_token_file(
     assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
     assert environment["HOME"] != os.environ.get("HOME")
     assert environment["XDG_CONFIG_HOME"] == environment["HOME"]
-    assert environment["GIT_CONFIG_COUNT"] == "2"
+    assert environment["GIT_CONFIG_COUNT"] == "3"
     assert environment["GIT_CONFIG_KEY_0"] == "core.hooksPath"
     assert environment["GIT_CONFIG_VALUE_0"] == os.devnull
-    assert environment["GIT_CONFIG_KEY_1"] == (
-        "http.https://github.com/example/private.extraheader"
-    )
-    assert environment["GIT_CONFIG_VALUE_1"] == "Authorization: Basic " + (
-        base64.b64encode(("x-access-token:" + token).encode("ascii")).decode("ascii")
-    )
+    assert environment["GIT_CONFIG_KEY_1"] == "credential.helper"
+    assert environment["GIT_CONFIG_KEY_2"] == "credential.useHttpPath"
+    assert environment["GIT_CONFIG_VALUE_2"] == "true"
     assert token not in environment["GIT_CONFIG_VALUE_1"]
     exact = subprocess.run(
-        [
-            "git",
-            "config",
-            "--get-urlmatch",
-            "http.extraheader",
-            "https://github.com/example/private",
-        ],
+        ["git", "credential", "fill"],
         env=environment,
         check=True,
         capture_output=True,
         text=True,
+        input="protocol=https\nhost=github.com\npath=example/private\n\n",
     )
     foreign_github = subprocess.run(
-        [
-            "git",
-            "config",
-            "--get-urlmatch",
-            "http.extraheader",
-            "https://github.com/example/other",
-        ],
+        ["git", "credential", "fill"],
         env=environment,
         check=False,
         capture_output=True,
         text=True,
+        input="protocol=https\nhost=github.com\npath=example/other\n\n",
     )
-    assert exact.stdout.strip() == environment["GIT_CONFIG_VALUE_1"]
-    assert foreign_github.returncode == 1
+    assert "username=x-access-token" in exact.stdout
+    assert "password=" + token in exact.stdout
+    assert foreign_github.returncode != 0
+    assert token not in foreign_github.stdout + foreign_github.stderr
     foreign = _git_environment("https://example.com/example/public")
     assert foreign["GIT_CONFIG_COUNT"] == "1"
     assert foreign["GIT_CONFIG_KEY_0"] == "core.hooksPath"

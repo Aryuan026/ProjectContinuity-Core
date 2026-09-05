@@ -35,6 +35,7 @@ from .runtime_environment import (
 )
 from .runtime_lock import RuntimeLockError, runtime_lifetime_lock
 from .turritopsis_adapter import TurritopsisAdapterError
+from .teamai_receipts import authority_request_digest
 from .truth_plane import LayerUnavailable, TruthPlaneError
 
 
@@ -45,6 +46,7 @@ MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 CASE_SEARCH_TIMEOUT_SECONDS = 15
 ARCHIVE_OPERATION_TIMEOUT_SECONDS = 60
 INTEGRATED_HISTORY_TIMEOUT_SECONDS = 15
+AUTHORITY_OPERATION_TIMEOUT_SECONDS = 60
 _TOOLS = frozenset({"list", "search", "get", "update", "promote"})
 _ARCHIVE_TIMEOUT_ERRORS = (
     FutureTimeoutError,
@@ -64,25 +66,28 @@ class RequestError(ValueError):
 class ArchiveOperationBusy(RuntimeError):
     """The sole archive worker still owns the backend after a prior request."""
 
-    def __init__(self, capability: str) -> None:
+    def __init__(self, capability: str, operation_id: str | None = None) -> None:
         super().__init__("archive backend is still owned by an in-flight operation")
         self.capability = capability
+        self.operation_id = operation_id
 
 
 class ArchiveOperationTimeout(TimeoutError):
     """The request deadline expired while the archive operation continues."""
 
-    def __init__(self, capability: str) -> None:
+    def __init__(self, capability: str, operation_id: str | None = None) -> None:
         super().__init__("archive operation exceeded its request deadline")
         self.capability = capability
+        self.operation_id = operation_id
 
 
 class ArchiveBackendTimeout(TimeoutError):
     """The archive backend reached a terminal timeout for this request."""
 
-    def __init__(self, capability: str) -> None:
+    def __init__(self, capability: str, operation_id: str | None = None) -> None:
         super().__init__("archive backend returned a terminal timeout")
         self.capability = capability
+        self.operation_id = operation_id
 
 
 class _ArchiveRunner:
@@ -91,6 +96,7 @@ class _ArchiveRunner:
     def __init__(self) -> None:
         self._state_lock = threading.Lock()
         self._active: Optional[Future[Any]] = None
+        self._active_operation_id: str | None = None
         self._closed = False
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(
@@ -114,14 +120,21 @@ class _ArchiveRunner:
         *,
         timeout: float,
         capability: str,
+        operation_id: str | None = None,
     ) -> Any:
         with self._state_lock:
             if self._closed:
                 raise RuntimeError("ProjectContinuity archive loop is closed")
             if self._active is not None and self._active.done():
                 self._active = None
+                self._active_operation_id = None
             if self._active is not None:
-                raise ArchiveOperationBusy(capability)
+                active_id = (
+                    self._active_operation_id
+                    if operation_id == self._active_operation_id
+                    else None
+                )
+                raise ArchiveOperationBusy(capability, active_id)
             awaitable = operation()
             try:
                 future = asyncio.run_coroutine_threadsafe(awaitable, self.loop)
@@ -131,6 +144,7 @@ class _ArchiveRunner:
                     close()
                 raise
             self._active = future
+            self._active_operation_id = operation_id
         # A Future may finish before registration, in which case
         # add_done_callback() invokes synchronously. Register outside the
         # non-reentrant state lock so an immediate result cannot self-deadlock.
@@ -143,13 +157,14 @@ class _ArchiveRunner:
                 try:
                     return future.result()
                 except _ARCHIVE_TIMEOUT_ERRORS as exc:
-                    raise ArchiveBackendTimeout(capability) from exc
-            raise ArchiveOperationTimeout(capability) from None
+                    raise ArchiveBackendTimeout(capability, operation_id) from exc
+            raise ArchiveOperationTimeout(capability, operation_id) from None
 
     def _release(self, future: Future[Any]) -> None:
         with self._state_lock:
             if self._active is future:
                 self._active = None
+                self._active_operation_id = None
 
     def close(self) -> None:
         """Stop only after any retained archive worker reaches terminal state."""
@@ -308,9 +323,11 @@ class FrontApplication:
         self.front = front
         self.credentials = credentials
         self._archive_runner = _ArchiveRunner()
+        self._authority_runner = _ArchiveRunner()
 
     def close(self) -> None:
         self._archive_runner.close()
+        self._authority_runner.close()
 
     def invoke(self, principal_id: str, request: Mapping[str, Any]) -> Any:
         _require_exact_keys(request, {"tool", "project_id", "arguments"}, "request")
@@ -369,13 +386,27 @@ class FrontApplication:
                 {"target", "operation", "parameters", "expected_revision"},
                 "authority update arguments",
             )
-            return self.front.update_authority(
-                principal_id,
-                project_id,
-                target,
-                arguments["operation"],
-                arguments["parameters"],
+            operation_id = "authority:" + authority_request_digest(
+                principal_id=principal_id,
+                project_id=project_id,
+                target=target,
+                operation=arguments["operation"],
+                parameters=arguments["parameters"],
                 expected_revision=arguments["expected_revision"],
+            ).removeprefix("sha256:")
+            return self._authority_runner.run(
+                lambda: asyncio.to_thread(
+                    self.front.update_authority,
+                    principal_id,
+                    project_id,
+                    target,
+                    arguments["operation"],
+                    arguments["parameters"],
+                    expected_revision=arguments["expected_revision"],
+                ),
+                timeout=AUTHORITY_OPERATION_TIMEOUT_SECONDS,
+                capability="authority_write",
+                operation_id=operation_id,
             )
         return self._run_archive(
             lambda: self._promote(principal_id, project_id, arguments),
@@ -660,35 +691,44 @@ class _RequestHandler(BaseHTTPRequestHandler):
             )
             return
         except ArchiveOperationBusy as exc:
+            payload = {
+                "ok": False,
+                "error": "backend_busy",
+                "capability": exc.capability,
+                "operation_state": "in_progress",
+            }
+            if exc.operation_id is not None:
+                payload["operation_id"] = exc.operation_id
             self._send(
                 503,
-                {
-                    "ok": False,
-                    "error": "backend_busy",
-                    "capability": exc.capability,
-                    "operation_state": "in_progress",
-                },
+                payload,
             )
             return
         except ArchiveOperationTimeout as exc:
+            payload = {
+                "ok": False,
+                "error": "backend_timeout",
+                "capability": exc.capability,
+                "operation_state": "in_progress",
+            }
+            if exc.operation_id is not None:
+                payload["operation_id"] = exc.operation_id
             self._send(
                 504,
-                {
-                    "ok": False,
-                    "error": "backend_timeout",
-                    "capability": exc.capability,
-                    "operation_state": "in_progress",
-                },
+                payload,
             )
             return
         except ArchiveBackendTimeout as exc:
+            payload = {
+                "ok": False,
+                "error": "backend_timeout",
+                "capability": exc.capability,
+            }
+            if exc.operation_id is not None:
+                payload["operation_id"] = exc.operation_id
             self._send(
                 504,
-                {
-                    "ok": False,
-                    "error": "backend_timeout",
-                    "capability": exc.capability,
-                },
+                payload,
             )
             return
         except (TurritopsisAdapterError, CogneeAdapterError):

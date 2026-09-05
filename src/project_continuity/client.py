@@ -17,6 +17,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 MAX_FRONT_TIMEOUT_SECONDS = 120
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{32,256}$")
+OPERATION_ID_PATTERN = re.compile(r"^authority:[0-9a-f]{64}$")
 
 
 class FrontClientError(RuntimeError):
@@ -187,4 +188,9 @@ def _error_receipt(status: int, value: Any) -> Dict[str, Any]:
                 receipt[key] = item
         if value.get("operation_state") == "in_progress":
             receipt["operation_state"] = "in_progress"
+        operation_id = value.get("operation_id")
+        if isinstance(operation_id, str) and OPERATION_ID_PATTERN.fullmatch(
+            operation_id
+        ):
+            receipt["operation_id"] = operation_id
     return receipt

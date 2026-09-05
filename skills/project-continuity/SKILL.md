@@ -44,6 +44,12 @@ Authority writes require `target`, `operation`, `parameters`, and the exact
 actor or principal in parameters. `truth-setup` and `truth-refresh` are
 stopped-front operator procedures, not Agent tools.
 
+If an authority update returns `operation_state=in_progress`, retain its
+`operation_id` and do not reinterpret the timeout as a failed write. Keep the
+same request bytes and `expected_revision`; after the retained worker finishes,
+replay that exact request so the authority-specific receipt can reconcile to
+the original branch, PR, or artifact instead of creating a duplicate.
+
 Keep parameters exact: committed code sends only `commit_sha`; a decision
 proposal sends `change_id` plus `artifacts` containing only `artifact_id`,
 `relative_output`, and `body`; decision archival sends only `change_id`; TeamAI

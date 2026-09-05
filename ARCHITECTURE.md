@@ -78,6 +78,13 @@ resolves the cited object at its owner. Event and personal-memory systems remain
 reference-only. ProjectContinuity never copies these layers into a second truth
 store.
 
+Authority writes share a second retained single-owner runner with the archive
+pattern but not its lock. A 60-second request deadline can report an unfinished
+write without cancelling it; the MCP and host deadlines remain 90 and 120
+seconds so that typed state reaches the Agent. TeamAI additionally freezes a
+durable request receipt, runs the donor against an exact-source clone whose
+fetch cannot chase newer remote main, and commits only after GitHub/Git readback.
+
 Managed delivery/OpenSpec/TeamAI checkouts and private bindings are installed or
 fast-forwarded only through the stopped-front operator commands `truth-setup`
 and `truth-refresh`. They are lifecycle controls, not additional Agent tools.

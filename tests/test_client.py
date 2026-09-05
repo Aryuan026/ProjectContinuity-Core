@@ -215,6 +215,52 @@ def test_front_client_preserves_archive_in_progress_state(
     assert "/srv/" not in str(caught.value)
 
 
+def test_front_client_preserves_only_a_bounded_authority_operation_identity(
+    monkeypatch,
+) -> None:
+    operation_id = "authority:" + "a" * 64
+    payload = {
+        "ok": False,
+        "error": "backend_timeout",
+        "capability": "authority_write",
+        "operation_id": operation_id,
+        "operation_state": "in_progress",
+        "private": "/srv/private/authority",
+    }
+
+    def fail(*_args, **_kwargs):
+        raise HTTPError(
+            "http://127.0.0.1:8766/v1/invoke",
+            504,
+            "Unavailable",
+            {},
+            BytesIO(json.dumps(payload).encode("utf-8")),
+        )
+
+    monkeypatch.setattr("project_continuity.client._open_front", fail)
+    with pytest.raises(FrontClientError) as caught:
+        FrontClient("http://127.0.0.1:8766/v1/invoke", TOKEN).invoke(
+            "update",
+            "alpha",
+            {
+                "target": "collaboration",
+                "operation": "contribute",
+                "parameters": {"title": "Bounded", "body": "Body"},
+                "expected_revision": "a" * 40,
+            },
+        )
+
+    assert caught.value.receipt == {
+        "ok": False,
+        "error": "backend_timeout",
+        "status": 504,
+        "capability": "authority_write",
+        "operation_id": operation_id,
+        "operation_state": "in_progress",
+    }
+    assert "/srv/" not in str(caught.value)
+
+
 def test_front_client_filters_unreviewed_operation_states(monkeypatch) -> None:
     payload = {
         "ok": False,

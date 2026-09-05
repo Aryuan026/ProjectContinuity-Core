@@ -165,6 +165,46 @@ class GitHubAuthorityResolver:
             raise GitHubResolverError("github_pull_request_malformed")
         return record
 
+    def collaboration_pull_requests(
+        self, repo_url: str, *, deadline: float | None = None
+    ) -> Sequence[Mapping[str, Any]]:
+        """Return bounded PR candidates for exact collaboration reconciliation."""
+
+        repo = self.repository(repo_url)
+        payload = self._get(
+            repo,
+            "pulls?state=all&sort=created&direction=desc&per_page=100",
+            deadline=deadline,
+        )
+        if not isinstance(payload, list) or len(payload) > MAX_ITEMS:
+            raise GitHubResolverError("github_pull_requests_malformed")
+        expected = "%s/%s" % (repo.owner, repo.name)
+        return tuple(
+            _collaboration_pull_request(item, expected)
+            for item in payload
+            if _same_repository_candidate(item, expected)
+        )
+
+    def collaboration_pull_request(
+        self,
+        repo_url: str,
+        pull_request: int,
+        *,
+        deadline: float | None = None,
+    ) -> Mapping[str, Any]:
+        if type(pull_request) is not int or pull_request < 1:
+            raise GitHubResolverError("github_pull_request_malformed")
+        repo = self.repository(repo_url)
+        payload = self._get(repo, "pulls/%d" % pull_request, deadline=deadline)
+        if not isinstance(payload, dict):
+            raise GitHubResolverError("github_pull_request_malformed")
+        result = _collaboration_pull_request(
+            payload, "%s/%s" % (repo.owner, repo.name)
+        )
+        if result["pull_request"] != pull_request:
+            raise GitHubResolverError("github_pull_request_malformed")
+        return result
+
     def releases(
         self, repo_url: str, *, deadline: float | None = None
     ) -> Sequence[Mapping[str, Any]]:
@@ -280,6 +320,87 @@ def _pull_request_record(value: Mapping[str, Any]) -> Mapping[str, Any]:
         "subject": title.strip(),
         "url": html_url,
     }
+
+
+def _collaboration_pull_request(
+    value: Mapping[str, Any], expected_repository: str
+) -> Mapping[str, Any]:
+    number = value.get("number")
+    state = value.get("state")
+    title = value.get("title")
+    body = value.get("body")
+    html_url = value.get("html_url")
+    head = value.get("head")
+    base = value.get("base")
+    if (
+        type(number) is not int
+        or number < 1
+        or state not in {"open", "closed"}
+        or not isinstance(title, str)
+        or not title.strip()
+        or body is not None
+        and not isinstance(body, str)
+        or not isinstance(html_url, str)
+        or not isinstance(head, dict)
+        or not isinstance(base, dict)
+    ):
+        raise GitHubResolverError("github_pull_request_malformed")
+    head_repo = head.get("repo")
+    base_repo = base.get("repo")
+    head_ref = head.get("ref")
+    base_ref = base.get("ref")
+    head_sha = head.get("sha")
+    base_sha = base.get("sha")
+    if (
+        not isinstance(head_repo, dict)
+        or head_repo.get("full_name") != expected_repository
+        or not isinstance(base_repo, dict)
+        or base_repo.get("full_name") != expected_repository
+        or not isinstance(head_ref, str)
+        or not head_ref
+        or not isinstance(base_ref, str)
+        or not base_ref
+        or not isinstance(head_sha, str)
+        or not _COMMIT.fullmatch(head_sha)
+        or not isinstance(base_sha, str)
+        or not _COMMIT.fullmatch(base_sha)
+    ):
+        raise GitHubResolverError("github_pull_request_malformed")
+    return {
+        "base_ref": base_ref,
+        "base_revision": base_sha,
+        "body": body or "",
+        "head_ref": head_ref,
+        "head_revision": head_sha,
+        "kind": "pull_request_candidate",
+        "pull_request": number,
+        "state": state,
+        "subject": title.strip(),
+        "url": html_url,
+    }
+
+
+def _same_repository_candidate(value: Any, expected_repository: str) -> bool:
+    if not isinstance(value, dict):
+        raise GitHubResolverError("github_pull_request_malformed")
+    head = value.get("head")
+    base = value.get("base")
+    if not isinstance(head, dict) or not isinstance(base, dict):
+        raise GitHubResolverError("github_pull_request_malformed")
+    head_repo = head.get("repo")
+    base_repo = base.get("repo")
+    if not isinstance(base_repo, dict) or not isinstance(
+        base_repo.get("full_name"), str
+    ):
+        raise GitHubResolverError("github_pull_request_malformed")
+    if not isinstance(head_repo, dict) or not isinstance(
+        head_repo.get("full_name"), str
+    ):
+        return False
+    return (
+        head_repo["full_name"] == expected_repository
+        and base_repo["full_name"] == expected_repository
+    )
 
 
 def _release_summary(value: Mapping[str, Any]) -> Mapping[str, Any]:

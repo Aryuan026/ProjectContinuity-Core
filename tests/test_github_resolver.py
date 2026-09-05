@@ -95,6 +95,47 @@ def test_authenticated_resolver_reads_squash_pr_and_published_release(
     )
 
 
+def test_authenticated_resolver_reads_exact_collaboration_pr_candidate(
+    tmp_path: Path,
+) -> None:
+    base = "a" * 40
+    head = "b" * 40
+    row = {
+        "number": 9,
+        "state": "open",
+        "title": "[teamai] Contribute session knowledge from writer-agent",
+        "body": "Contribute session knowledge: exact handoff",
+        "html_url": "https://github.com/example/alpha/pull/9",
+        "head": {
+            "ref": "teamai/push/writer-agent/20260905-120000",
+            "sha": head,
+            "repo": {"full_name": "example/alpha"},
+        },
+        "base": {
+            "ref": "main",
+            "sha": base,
+            "repo": {"full_name": "example/alpha"},
+        },
+    }
+    opener = Opener(
+        {
+            "pulls?state=all&sort=created&direction=desc&per_page=100": [row],
+            "pulls/9": row,
+        }
+    )
+    resolver = GitHubAuthorityResolver(_token(tmp_path / "github-token"), opener=opener)
+
+    listed = resolver.collaboration_pull_requests("https://github.com/example/alpha")
+    exact = resolver.collaboration_pull_request(
+        "https://github.com/example/alpha", 9
+    )
+
+    assert listed == (exact,)
+    assert exact["head_revision"] == head
+    assert exact["base_revision"] == base
+    assert exact["head_ref"].startswith("teamai/push/writer-agent/")
+
+
 def test_non_github_repository_is_rejected_before_any_request(tmp_path: Path) -> None:
     opener = Opener({})
     resolver = GitHubAuthorityResolver(_token(tmp_path / "github-token"), opener=opener)
