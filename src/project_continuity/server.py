@@ -35,6 +35,7 @@ from .runtime_environment import (
 )
 from .runtime_lock import RuntimeLockError, runtime_lifetime_lock
 from .turritopsis_adapter import TurritopsisAdapterError
+from .truth_plane import LayerUnavailable, TruthPlaneError
 
 
 BIND_HOST = "127.0.0.1"
@@ -43,6 +44,7 @@ MAX_REQUEST_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 CASE_SEARCH_TIMEOUT_SECONDS = 15
 ARCHIVE_OPERATION_TIMEOUT_SECONDS = 60
+INTEGRATED_HISTORY_TIMEOUT_SECONDS = 15
 _TOOLS = frozenset({"list", "search", "get", "update", "promote"})
 _ARCHIVE_TIMEOUT_ERRORS = (
     FutureTimeoutError,
@@ -324,9 +326,23 @@ class FrontApplication:
 
         if tool == "list":
             _require_exact_keys(arguments, set(), "list arguments", optional={"current"})
-            return self.front.list_stages(
+            base = self.front.list_project(
                 principal_id, project_id, current=arguments.get("current", "")
             )
+            try:
+                return self._run_archive(
+                    lambda: self.front.list_project_complete(
+                        principal_id,
+                        project_id,
+                        current=arguments.get("current", ""),
+                        base=base,
+                    ),
+                    timeout=INTEGRATED_HISTORY_TIMEOUT_SECONDS,
+                )
+            except ArchiveOperationBusy:
+                return _list_with_archive_gap(base, "history_archive_busy")
+            except ArchiveOperationTimeout:
+                return _list_with_archive_gap(base, "history_archive_timeout")
         if tool == "search":
             return self._search(principal_id, project_id, arguments)
         if tool == "get":
@@ -366,9 +382,10 @@ class FrontApplication:
                 "context",
                 "limit",
                 "case_sensitive",
+                "selector",
             },
         )
-        scope = arguments.get("scope", "stages")
+        scope = arguments.get("scope", "auto")
         if scope == "cases":
             _require_exact_keys(
                 arguments,
@@ -387,19 +404,49 @@ class FrontApplication:
                 timeout=CASE_SEARCH_TIMEOUT_SECONDS,
                 capability="case_search",
             )
-        if scope != "stages":
-            raise RequestError("search scope must be stages or cases")
-        return self.front.search_stages(
+        if scope == "stages":
+            return self.front.search_stages(
+                principal_id,
+                project_id,
+                arguments["query"],
+                match=arguments.get("match", "semantic"),
+                current=arguments.get("current", ""),
+                stage_id=arguments.get("stage_id", ""),
+                context=arguments.get("context", 2),
+                limit=arguments.get("limit", 8),
+                case_sensitive=arguments.get("case_sensitive", False),
+            )
+        base = self.front.search_project_base(
             principal_id,
             project_id,
             arguments["query"],
-            match=arguments.get("match", "semantic"),
+            scope=scope,
             current=arguments.get("current", ""),
             stage_id=arguments.get("stage_id", ""),
             context=arguments.get("context", 2),
             limit=arguments.get("limit", 8),
             case_sensitive=arguments.get("case_sensitive", False),
+            selector=arguments.get("selector", ""),
         )
+        if scope not in {"auto", "all"}:
+            return base
+        try:
+            return self._run_archive(
+                lambda: self.front.complete_project_search(
+                    base,
+                    principal_id,
+                    project_id,
+                    arguments["query"],
+                    match=arguments.get("match", ""),
+                    limit=arguments.get("limit", 8),
+                ),
+                timeout=CASE_SEARCH_TIMEOUT_SECONDS,
+                capability="case_search",
+            )
+        except ArchiveOperationBusy:
+            return _search_with_archive_gap(base, "history_archive_busy")
+        except ArchiveOperationTimeout:
+            return _search_with_archive_gap(base, "history_archive_timeout")
 
     def _get(
         self, principal_id: str, project_id: str, arguments: Mapping[str, Any]
@@ -408,14 +455,19 @@ class FrontApplication:
             arguments,
             set(),
             "get arguments",
-            optional={"stage_id", "promotion_id"},
+            optional={"stage_id", "promotion_id", "resource_ref"},
         )
         stage_id = arguments.get("stage_id")
         promotion_id = arguments.get("promotion_id")
-        if bool(stage_id) == bool(promotion_id):
-            raise RequestError("get requires exactly one stage_id or promotion_id")
+        resource_ref = arguments.get("resource_ref")
+        if sum(bool(value) for value in (stage_id, promotion_id, resource_ref)) != 1:
+            raise RequestError(
+                "get requires exactly one stage_id, promotion_id, or resource_ref"
+            )
         if stage_id:
             return self.front.get_stage(principal_id, project_id, stage_id)
+        if resource_ref:
+            return self.front.get_resource(principal_id, project_id, resource_ref)
         return self._run_archive(
             lambda: self.front.get_case(principal_id, project_id, promotion_id),
             timeout=ARCHIVE_OPERATION_TIMEOUT_SECONDS,
@@ -558,6 +610,25 @@ class _RequestHandler(BaseHTTPRequestHandler):
         except (ReceiptError, PromotionError) as exc:
             self._send(409, {"ok": False, "error": "operation_conflict", "detail": str(exc)})
             return
+        except LayerUnavailable as exc:
+            self._send(
+                503,
+                {"ok": False, "error": "authority_unavailable", "detail": str(exc)},
+            )
+            return
+        except TruthPlaneError as exc:
+            detail = str(exc)
+            if detail.endswith(("_failed", "_unavailable")):
+                self._send(
+                    503,
+                    {"ok": False, "error": "authority_unavailable", "detail": detail},
+                )
+            else:
+                self._send(
+                    422,
+                    {"ok": False, "error": "invalid_operation", "detail": detail},
+                )
+            return
         except CogneeCapabilityUnavailable:
             self._send(
                 503,
@@ -688,6 +759,45 @@ def _reject_duplicate_keys(pairs):
         if key in result:
             raise RequestError("request JSON contains a duplicate key")
         result[key] = value
+    return result
+
+
+def _list_with_archive_gap(base: Mapping[str, Any], reason: str) -> Dict[str, Any]:
+    result = dict(base)
+    external = dict(result["truth_plane"]["coverage"])
+    unavailable = dict(external["unavailable"])
+    unavailable["history"] = reason
+    result["history_archive"] = {"available": False, "reason": reason}
+    result["coverage"] = {
+        "consulted": ["current", "history", *external["consulted"]],
+        "matched": ["current", *external["matched"]],
+        "unavailable": unavailable,
+        "failed": dict(external["failed"]),
+        "complete": False,
+    }
+    return result
+
+
+def _search_with_archive_gap(base: Mapping[str, Any], reason: str) -> Dict[str, Any]:
+    result = dict(base)
+    results = dict(result["results"])
+    results["history"] = []
+    coverage = dict(result["coverage"])
+    consulted = list(coverage["consulted"])
+    if "history" not in consulted:
+        consulted.insert(1 if "current" in consulted else 0, "history")
+    unavailable = dict(coverage["unavailable"])
+    unavailable["history"] = reason
+    failed = dict(coverage["failed"])
+    result["results"] = results
+    result["coverage"] = {
+        "consulted": consulted,
+        "matched": list(coverage["matched"]),
+        "unavailable": unavailable,
+        "failed": failed,
+        "complete": False,
+    }
+    result["ok"] = not failed
     return result
 
 

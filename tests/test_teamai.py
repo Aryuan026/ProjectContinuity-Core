@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -11,7 +13,7 @@ from project_continuity.teamai import (
     render_teamai_guard_documents,
     resolve_teamai_identity,
     teamai_explicit_environment,
-    teamai_readonly_recall_argv,
+    teamai_readonly_recall_request,
     verify_teamai_guard_documents,
     verify_teamai_runtime_lock,
 )
@@ -270,13 +272,87 @@ def test_readonly_recall_keeps_donor_search_but_disables_local_signal_writers() 
         "TEAMAI_HOOKS_DISABLED": "1",
         "TEAMAI_RECALL_DISABLED": "1",
     }
-    assert teamai_readonly_recall_argv("中文协作检索") == (
-        "--dry-run",
-        "recall",
-        "中文协作检索",
-    )
+    assert json.loads(teamai_readonly_recall_request("中文协作检索")) == {
+        "query": "中文协作检索"
+    }
     with pytest.raises(TeamAIContractError, match="recall query"):
-        teamai_readonly_recall_argv(" hidden\nquery ")
+        teamai_readonly_recall_request(" hidden\nquery ")
+
+
+@pytest.mark.parametrize("query", ["disable", "enable", "status", "--help", "--check"])
+def test_literal_recall_wrapper_never_dispatches_query_as_a_command(
+    tmp_path: Path, query: str
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    runtime = tmp_path / "runtime"
+    commander = runtime / "node_modules/commander/index.js"
+    commander.parent.mkdir(parents=True)
+    commander.write_text(
+        """class Command {
+  constructor(name = '') { this._name = name; this._opts = {}; this.parent = null; }
+  name(value) { if (value === undefined) return this._name; this._name = value; return this; }
+  command(spec) { const child = new Command(spec.split(' ')[0]); child.parent = this; return child; }
+  description() { return this; }
+  option() { return this; }
+  action(fn) { this._action = fn; return this; }
+  setOptionValue(key, value) { this._opts[key] = value; return this; }
+  opts() { return this._opts; }
+  parse() { return this; }
+}
+module.exports = { Command };
+""",
+        encoding="utf-8",
+    )
+    entrypoint = runtime / "index.mjs"
+    entrypoint.write_text(
+        """import { createRequire } from 'node:module';
+import { writeFileSync } from 'node:fs';
+const require = createRequire(import.meta.url);
+const { Command } = require('commander');
+const program = new Command().name('teamai').option('--dry-run');
+const recall = program.command('recall [query...]').action(async (parts) => {
+  process.stdout.write(JSON.stringify({query: parts.join(' '), dryRun: program.opts().dryRun}));
+});
+for (const name of ['disable', 'enable', 'status']) {
+  recall.command(name).action(async () => writeFileSync('MUTATED', name));
+}
+program.parse();
+""",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "sentinel.txt").write_text("unchanged\n", encoding="utf-8")
+    before = {
+        path.relative_to(workspace).as_posix(): path.read_bytes()
+        for path in workspace.rglob("*")
+        if path.is_file()
+    }
+
+    completed = subprocess.run(
+        [
+            node,
+            str(RUNTIME_ROOT / "project-continuity-literal-recall.mjs"),
+            str(entrypoint),
+        ],
+        cwd=workspace,
+        check=False,
+        capture_output=True,
+        text=True,
+        input=teamai_readonly_recall_request(query),
+        timeout=10,
+    )
+    after = {
+        path.relative_to(workspace).as_posix(): path.read_bytes()
+        for path in workspace.rglob("*")
+        if path.is_file()
+    }
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"query": query, "dryRun": True}
+    assert before == after
 
 
 def test_guard_renderer_rejects_untrusted_identity_and_repo_url() -> None:

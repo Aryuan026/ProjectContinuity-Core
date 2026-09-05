@@ -4,6 +4,8 @@ import pytest
 
 from project_continuity.refs import (
     graph_artifact_ref,
+    github_pull_request_ref,
+    github_release_ref,
     openspec_decision_ref,
     teamai_reviewed_ref,
 )
@@ -174,3 +176,26 @@ def test_teamai_ref_requires_reviewed_merged_git_identity(
 
     with pytest.raises(ValueError, match=expected):
         teamai_reviewed_ref(**fields)
+
+
+def test_delivery_pull_request_and_release_refs_preserve_exact_git_identity() -> None:
+    pull = github_pull_request_ref(
+        project_id="alpha",
+        pull_request=7,
+        merge_revision="a" * 40,
+        artifact_digest="sha256:" + "b" * 64,
+        repo_url="https://github.com/example/alpha",
+        subject="Merge pull request #7 from example/feature",
+    )
+    release = github_release_ref(
+        project_id="alpha",
+        tag="v1.2.3",
+        revision="c" * 40,
+        artifact_digest="sha256:" + "d" * 64,
+        repo_url="https://github.com/example/alpha",
+    )
+
+    assert pull.object_id == "pull-request:alpha:7"
+    assert pull.projection == "merged-pull-request"
+    assert release.object_id == "release:alpha:v1.2.3"
+    assert release.projection == "delivered-release-tag"

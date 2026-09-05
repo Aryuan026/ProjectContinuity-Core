@@ -5,5 +5,5 @@ include THIRD_PARTY_NOTICES.md uv.lock
 recursive-include config *.toml
 recursive-include skills *.md *.yaml
 recursive-include third_party/licenses *
-recursive-include vendor/teamai-runtime *.json *.md
+recursive-include vendor/teamai-runtime *.json *.md *.mjs
 prune vendor/teamai-runtime/node_modules

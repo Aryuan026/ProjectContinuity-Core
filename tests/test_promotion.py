@@ -349,6 +349,91 @@ def test_native_adapter_refuses_remote_mode_without_stable_data_id(
         cognee_adapter._assert_native_runtime()
 
 
+def test_native_archive_status_counts_only_project_case_rows(monkeypatch) -> None:
+    dataset_id = "dataset-one"
+    dataset = type("Dataset", (), {"id": dataset_id})()
+    rows = [
+        type(
+            "Row",
+            (),
+            {
+                "label": cognee_adapter.CASE_LABEL,
+                "external_metadata": {
+                    "project_id": "alpha",
+                    "promotion_id": "promotion:ready",
+                },
+                "pipeline_status": {
+                    "cognify_pipeline": {
+                        dataset_id: "DATA_ITEM_PROCESSING_COMPLETED"
+                    }
+                },
+            },
+        )(),
+        type(
+            "Row",
+            (),
+            {
+                "label": cognee_adapter.CASE_LABEL,
+                "external_metadata": {
+                    "project_id": "alpha",
+                    "promotion_id": "promotion:partial",
+                },
+                "pipeline_status": {},
+            },
+        )(),
+        type(
+            "Row",
+            (),
+            {
+                "label": "other-data",
+                "external_metadata": {
+                    "project_id": "alpha",
+                    "promotion_id": "promotion:ignored",
+                },
+                "pipeline_status": {},
+            },
+        )(),
+    ]
+    for name in (
+        "cognee",
+        "cognee.modules",
+        "cognee.modules.data",
+        "cognee.modules.data.methods",
+    ):
+        module = ModuleType(name)
+        module.__path__ = []
+        monkeypatch.setitem(sys.modules, name, module)
+    get_dataset_data_module = ModuleType(
+        "cognee.modules.data.methods.get_dataset_data"
+    )
+
+    async def get_dataset_data(requested_dataset_id):
+        assert requested_dataset_id == dataset_id
+        return rows
+
+    get_dataset_data_module.get_dataset_data = get_dataset_data
+    monkeypatch.setitem(
+        sys.modules,
+        "cognee.modules.data.methods.get_dataset_data",
+        get_dataset_data_module,
+    )
+    backend = cognee_adapter.NativeCogneeBackend()
+
+    async def user_and_dataset(project_id, *, create):
+        assert project_id == "alpha"
+        assert create is False
+        return object(), dataset
+
+    monkeypatch.setattr(cognee_adapter, "_assert_native_runtime", lambda: None)
+    monkeypatch.setattr(backend, "_user_and_dataset", user_and_dataset)
+
+    assert asyncio.run(backend.status("alpha")) == {
+        "dataset_name": "project-continuity-alpha",
+        "partial_cases": 1,
+        "ready_cases": 1,
+    }
+
+
 def test_envelope_is_canonical_across_provenance_order(f4) -> None:
     _front, _backend, stage, fields = f4
     first = PromotionRequest.create(

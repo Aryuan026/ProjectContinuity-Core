@@ -1,9 +1,17 @@
 """One in-process cognition front over independent per-project Stores."""
 
-from typing import Any, Dict, Optional, Sequence
+import asyncio
+
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .acl import StageAccessError, StaticACL
-from .cognee_adapter import CogneeBackend, CogneeCaseRecord, NativeCogneeBackend
+from .cognee_adapter import (
+    CogneeBackend,
+    CogneeCapabilityUnavailable,
+    CogneeCaseRecord,
+    CogneeUnavailable,
+    NativeCogneeBackend,
+)
 from .config import Config
 from .evidence import StableRef
 from .promotion import (
@@ -17,6 +25,11 @@ from .turritopsis_adapter import (
     StoreBoundaryError,
     TurritopsisAdapter,
     project_store_path,
+)
+from .truth_plane import (
+    EXTERNAL_LAYERS,
+    IntegratedTruthPlane,
+    build_installed_truth_plane,
 )
 
 
@@ -35,6 +48,7 @@ class CognitionFront:
         service_factory: Optional[ServiceFactory] = None,
         cognee_backend: Optional[CogneeBackend] = None,
         receipt_store: Optional[ReceiptStore] = None,
+        truth_plane: Optional[IntegratedTruthPlane] = None,
     ) -> None:
         self.config = config
         self.acl = StaticACL(config)
@@ -59,6 +73,260 @@ class CognitionFront:
         self._cognee_backend = cognee_backend
         self._receipt_store = receipt_store
         self._promotion: Optional[PromotionCoordinator] = None
+        self._truth_plane = truth_plane or build_installed_truth_plane(config)
+
+    def list_project(
+        self, principal_id: str, project_id: str, current: str = ""
+    ) -> Dict[str, Any]:
+        """Preserve donor orientation and expose every authority layer honestly."""
+
+        result = dict(self.list_stages(principal_id, project_id, current))
+        result["truth_plane"] = self._truth_plane.list_layers(
+            principal_id, project_id
+        )
+        return result
+
+    async def list_project_complete(
+        self,
+        principal_id: str,
+        project_id: str,
+        current: str = "",
+        *,
+        base: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Add provider-free history status to the complete authority inventory."""
+
+        result = dict(base or self.list_project(principal_id, project_id, current))
+        external = result["truth_plane"]["coverage"]
+        consulted = ["current", "history", *external["consulted"]]
+        matched = ["current", *external["matched"]]
+        unavailable = dict(external["unavailable"])
+        failed = dict(external["failed"])
+        try:
+            history = dict(await self._archive_backend().status(project_id))
+        except CogneeUnavailable:
+            reason = "history_archive_unavailable"
+            result["history_archive"] = {
+                "available": False,
+                "reason": reason,
+            }
+            unavailable["history"] = reason
+        except Exception:
+            reason = "history_archive_failed"
+            result["history_archive"] = {
+                "available": False,
+                "reason": reason,
+            }
+            failed["history"] = reason
+        else:
+            result["history_archive"] = {"available": True, **history}
+            matched.insert(1, "history")
+        result["coverage"] = {
+            "consulted": consulted,
+            "matched": matched,
+            "unavailable": unavailable,
+            "failed": failed,
+            "complete": not unavailable and not failed,
+        }
+        return result
+
+    async def search_project(
+        self,
+        principal_id: str,
+        project_id: str,
+        query: str,
+        *,
+        scope: str = "auto",
+        match: str = "",
+        current: str = "",
+        stage_id: str = "",
+        context: int = 2,
+        limit: int = 8,
+        case_sensitive: bool = False,
+        selector: str = "",
+    ) -> Dict[str, Any]:
+        """Search one or every registered authority without hiding omissions."""
+
+        if scope == "stages":
+            return self.search_stages(
+                principal_id,
+                project_id,
+                query,
+                match=match or "semantic",
+                current=current,
+                stage_id=stage_id,
+                context=context,
+                limit=limit,
+                case_sensitive=case_sensitive,
+            )
+        if scope == "cases":
+            return {
+                "results": await self.search_cases(
+                    principal_id,
+                    project_id,
+                    query,
+                    match=match or "keyword",
+                    limit=limit,
+                )
+            }
+        base = await asyncio.to_thread(
+            self.search_project_base,
+            principal_id,
+            project_id,
+            query,
+            scope=scope,
+            current=current,
+            stage_id=stage_id,
+            context=context,
+            limit=limit,
+            case_sensitive=case_sensitive,
+            selector=selector,
+        )
+        return await self.complete_project_search(
+            base,
+            principal_id,
+            project_id,
+            query,
+            match=match,
+            limit=limit,
+        )
+
+    def search_project_base(
+        self,
+        principal_id: str,
+        project_id: str,
+        query: str,
+        *,
+        scope: str,
+        current: str = "",
+        stage_id: str = "",
+        context: int = 2,
+        limit: int = 8,
+        case_sensitive: bool = False,
+        selector: str = "",
+    ) -> Dict[str, Any]:
+        """Consult Stage and external owners before taking the Cognee lock."""
+
+        if scope not in {"auto", "all", *EXTERNAL_LAYERS}:
+            raise ValueError("search scope is unsupported")
+        self.acl.grant(principal_id, project_id, "search")
+        scopes = EXTERNAL_LAYERS if scope in {"auto", "all"} else (scope,)
+        external = self._truth_plane.search(
+            principal_id,
+            project_id,
+            query,
+            scopes=scopes,
+            limit=limit,
+            selectors={"code": selector} if selector else None,
+        )
+        results: Dict[str, Any] = dict(external["results"])
+        coverage = dict(external["coverage"])
+        consulted = list(coverage["consulted"])
+        matched = list(coverage["matched"])
+        unavailable = dict(coverage["unavailable"])
+        failed = dict(coverage["failed"])
+
+        if scope in {"auto", "all"}:
+            consulted.insert(0, "current")
+            try:
+                stages = self.search_stages(
+                    principal_id,
+                    project_id,
+                    query,
+                    match="semantic",
+                    current=current,
+                    stage_id=stage_id,
+                    context=context,
+                    limit=limit,
+                    case_sensitive=case_sensitive,
+                )
+            except Exception:
+                stages = {"results": []}
+                failed["current"] = "current_search_failed"
+            results["current"] = stages.get("results", [])
+            if results["current"]:
+                matched.insert(0, "current")
+
+        return {
+            "ok": not failed,
+            "project_id": project_id,
+            "query": query,
+            "scope": scope,
+            "results": results,
+            "coverage": {
+                "consulted": consulted,
+                "matched": matched,
+                "unavailable": unavailable,
+                "failed": failed,
+                "complete": not unavailable and not failed,
+            },
+        }
+
+    async def complete_project_search(
+        self,
+        base: Mapping[str, Any],
+        principal_id: str,
+        project_id: str,
+        query: str,
+        *,
+        match: str = "",
+        limit: int = 8,
+    ) -> Dict[str, Any]:
+        """Add only the serialized Cognee history portion to a prepared search."""
+
+        result = {
+            **dict(base),
+            "results": dict(base["results"]),
+            "coverage": {
+                key: (dict(value) if isinstance(value, dict) else list(value))
+                for key, value in dict(base["coverage"]).items()
+                if key != "complete"
+            },
+        }
+        coverage = result["coverage"]
+        consulted = coverage["consulted"]
+        matched = coverage["matched"]
+        unavailable = coverage["unavailable"]
+        failed = coverage["failed"]
+        if result["scope"] in {"auto", "all"}:
+            consulted.insert(1, "history")
+            try:
+                cases = await self.search_cases(
+                    principal_id,
+                    project_id,
+                    query,
+                    match=match or "keyword",
+                    limit=limit,
+                )
+            except CogneeCapabilityUnavailable:
+                cases = []
+                unavailable["history"] = "history_capability_unavailable"
+            except CogneeUnavailable:
+                cases = []
+                unavailable["history"] = "history_archive_unavailable"
+            except Exception:
+                cases = []
+                failed["history"] = "history_search_failed"
+            result["results"]["history"] = cases
+            if cases:
+                matched.insert(1, "history")
+        coverage["complete"] = not unavailable and not failed
+        result["ok"] = not failed
+        return result
+
+    def get_resource(
+        self,
+        principal_id: str,
+        project_id: str,
+        reference: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Resolve one exact donor-owned object through its immutable StableRef."""
+
+        self.acl.grant(principal_id, project_id, "get")
+        return self._truth_plane.get(
+            principal_id, project_id, StableRef.from_dict(reference)
+        )
+
 
     def list_stages(
         self, principal_id: str, project_id: str, current: str = ""
