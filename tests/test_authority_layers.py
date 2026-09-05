@@ -160,7 +160,12 @@ if 'contribute' in sys.argv:
     }
     if any(os.environ.get(key) != value for key, value in expected.items()):
         raise SystemExit(9)
-    reports = pathlib.Path('.teamai/reports-wt')
+    if os.environ.get('GIT_CONFIG_KEY_1') != 'http.https://github.com/example/alpha-team.extraheader':
+        raise SystemExit(10)
+    if 'Authorization: Basic ' not in os.environ.get('GIT_CONFIG_VALUE_1', ''):
+        raise SystemExit(10)
+    config = json.loads(pathlib.Path('.teamai/config.yaml').read_text())
+    reports = pathlib.Path(config['repo']['localPath']) / 'reports-wt'
     reports.mkdir(parents=True, exist_ok=True)
     (reports / 'donor-owned-state').write_text('native worktree\\n')
     print('Branch teamai/push/writer-agent/canary has been pushed')
@@ -625,6 +630,112 @@ def test_teamai_old_ref_survives_refresh_edit_and_delete_without_review_drift(
     _git(root, "add", "-u", ".teamai")
     _git(root, "commit", "-m", "delete current collaboration file")
     assert "原始审核内容" in layer.get("reader-client", "alpha", reference)["content"]
+
+
+def test_openspec_update_uses_native_validate_and_review_branch(
+    config, tmp_path: Path, monkeypatch
+) -> None:
+    remote = "https://github.com/example/alpha-specs"
+    root = _repo(config.paths.data_root / "openspec/alpha", remote)
+    (root / "openspec").mkdir()
+    (root / "openspec/config.yaml").write_text(
+        "schema: spec-driven\n", encoding="utf-8"
+    )
+    _git(root, "add", "openspec/config.yaml")
+    _git(root, "commit", "-m", "configure OpenSpec")
+    layer = OpenSpecLayer(
+        config,
+        OpenSpecBinding("alpha-specs", remote),
+        _fake_openspec(tmp_path / "openspec-write"),
+    )
+    monkeypatch.setattr(
+        "project_continuity.authority_layers._remote_branch", lambda *_args: None
+    )
+    pushed = []
+    monkeypatch.setattr(
+        "project_continuity.authority_layers._push_branch",
+        lambda _root, _worktree, branch, _remote: pushed.append(branch),
+    )
+
+    receipt = layer.update(
+        "writer-client",
+        "alpha",
+        "prepare_change",
+        {
+            "change_id": "integrate-truth-plane",
+            "artifacts": [
+                {
+                    "artifact_id": "proposal",
+                    "relative_output": "proposal.md",
+                    "body": "# Why\n\nRoute every authority through one surface.\n",
+                }
+            ],
+        },
+        expected_revision=_git(root, "rev-parse", "HEAD"),
+    )
+
+    assert receipt["actor"] == "writer-agent"
+    assert receipt["review_state"] == "pending"
+    assert pushed == [
+        "project-continuity/openspec/writer-agent/prepare-change-integrate-truth-plane"
+    ]
+    assert _git(root, "status", "--porcelain=v1", "--untracked-files=all") == ""
+
+
+def test_teamai_update_uses_derived_actor_and_write_only_remote_auth(
+    config, tmp_path: Path, monkeypatch
+) -> None:
+    remote = "https://github.com/example/alpha-team"
+    root = _repo(config.paths.data_root / "team/alpha", remote)
+    (root / ".gitignore").write_text(
+        ".teamai/config.yaml\n.teamai/knowledge-wt/\n.teamai/search-index.json\n",
+        encoding="utf-8",
+    )
+    for relative, content in render_teamai_guard_documents(
+        team_id="alpha-team", repo_url=remote, reviewers=("reviewer-agent",)
+    ).items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _git(root, "add", ".gitignore", ".teamai")
+    _git(root, "commit", "-m", "configure TeamAI")
+    entrypoint = tmp_path / "teamai.js"
+    entrypoint.write_text("// fake\n", encoding="utf-8")
+    layer = TeamAILayer(
+        config,
+        TeamAIBinding("alpha-team", remote, ("reviewer-agent",)),
+        _fake_node(tmp_path / "node-write"),
+        entrypoint,
+    )
+    token_dir = tmp_path / "credentials"
+    token_dir.mkdir(mode=0o700)
+    token_file = token_dir / "github.token"
+    token_file.write_text("managed_github_token_value_000001\n", encoding="ascii")
+    token_file.chmod(0o600)
+    monkeypatch.setenv("PROJECT_CONTINUITY_GITHUB_TOKEN_FILE", str(token_file))
+
+    receipt = layer.update(
+        "writer-client",
+        "alpha",
+        "contribute",
+        {"title": "统一验收", "body": "# 协作记录\n\n同一五工具完成路由。\n"},
+        expected_revision=_git(root, "rev-parse", "HEAD"),
+    )
+
+    assert receipt["actor"] == "writer-agent"
+    assert receipt["pull_request"] == 11
+    assert receipt["review_state"] == "pr_opened"
+    assert receipt["source_revision"] == _git(root, "rev-parse", "HEAD")
+    assert "@project-continuity.invalid" not in json.dumps(receipt, sort_keys=True)
+    assert not (root / ".teamai/config.yaml").exists()
+    assert (root / ".teamai/reports-wt/donor-owned-state").is_file()
+    assert _git(root, "status", "--porcelain=v1", "--untracked-files=all") == ""
+
+    (root / "unexpected-untracked.txt").write_text(
+        "not donor state\n", encoding="utf-8"
+    )
+    with pytest.raises(AuthorityLayerError, match="managed_repo_is_dirty"):
+        layer.status("writer-client", "alpha")
 
 
 def test_delivery_git_search_and_exact_get(config) -> None:

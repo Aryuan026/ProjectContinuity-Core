@@ -110,6 +110,78 @@ def test_mcp_routes_the_native_five_tools_without_actor_or_principal_claims() ->
     assert all("actor" not in call[2] and "principal_id" not in call[2] for call in client.calls)
 
 
+def test_update_tool_routes_external_authority_without_a_sixth_tool() -> None:
+    client = FakeClient()
+    server = build_mcp(client)
+
+    _run(
+        server.call_tool(
+            "update",
+            {
+                "project_id": "alpha",
+                "target": "code",
+                "operation": "register_committed",
+                "parameters": {"commit_sha": "a" * 40},
+                "expected_revision": "absent",
+            },
+        )
+    )
+
+    assert client.calls == [
+        (
+            "update",
+            "alpha",
+            {
+                "target": "code",
+                "operation": "register_committed",
+                "parameters": {"commit_sha": "a" * 40},
+                "expected_revision": "absent",
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {
+            "project_id": "alpha",
+            "stage_id": "project.handoff",
+            "body": "next",
+            "expected_revision": "a" * 16,
+            "operation": "contribute",
+            "parameters": {"title": "mixed", "body": "mixed"},
+        },
+        {
+            "project_id": "alpha",
+            "target": "code",
+            "operation": "register_committed",
+            "parameters": {"commit_sha": "a" * 40},
+            "expected_revision": "absent",
+            "stage_id": "project.handoff",
+            "body": "mixed",
+        },
+        {
+            "project_id": "alpha",
+            "target": "collaboration",
+            "operation": "contribute",
+            "parameters": {"title": "mixed", "body": "mixed"},
+            "expected_revision": "b" * 40,
+            "mode": "append",
+        },
+    ],
+)
+def test_update_tool_rejects_mixed_request_forms_before_front_call(
+    arguments: dict,
+) -> None:
+    client = FakeClient()
+
+    with pytest.raises(ToolError):
+        _run(build_mcp(client).call_tool("update", arguments))
+
+    assert client.calls == []
+
+
 def test_mcp_defaults_to_integrated_search_and_forwards_exact_resource_ref() -> None:
     client = FakeClient()
     server = build_mcp(client)

@@ -348,19 +348,34 @@ class FrontApplication:
         if tool == "get":
             return self._get(principal_id, project_id, arguments)
         if tool == "update":
+            target = arguments.get("target", "current")
+            if target == "current":
+                _require_exact_keys(
+                    arguments,
+                    {"stage_id", "body", "expected_revision"},
+                    "Stage update arguments",
+                    optional={"mode", "target"},
+                )
+                return self.front.update_stage(
+                    principal_id,
+                    project_id,
+                    arguments["stage_id"],
+                    arguments["body"],
+                    expected_revision=arguments["expected_revision"],
+                    mode=arguments.get("mode", "replace"),
+                )
             _require_exact_keys(
                 arguments,
-                {"stage_id", "body", "expected_revision"},
-                "update arguments",
-                optional={"mode"},
+                {"target", "operation", "parameters", "expected_revision"},
+                "authority update arguments",
             )
-            return self.front.update_stage(
+            return self.front.update_authority(
                 principal_id,
                 project_id,
-                arguments["stage_id"],
-                arguments["body"],
+                target,
+                arguments["operation"],
+                arguments["parameters"],
                 expected_revision=arguments["expected_revision"],
-                mode=arguments.get("mode", "replace"),
             )
         return self._run_archive(
             lambda: self._promote(principal_id, project_id, arguments),
@@ -618,7 +633,12 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
         except TruthPlaneError as exc:
             detail = str(exc)
-            if detail.endswith(("_failed", "_unavailable")):
+            if "conflict" in detail:
+                self._send(
+                    409,
+                    {"ok": False, "error": "operation_conflict", "detail": detail},
+                )
+            elif detail.endswith(("_failed", "_unavailable")):
                 self._send(
                     503,
                     {"ok": False, "error": "authority_unavailable", "detail": detail},

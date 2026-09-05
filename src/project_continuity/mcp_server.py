@@ -113,10 +113,10 @@ def build_mcp(client: FrontClient) -> FastMCP:
     @server.tool(
         name="update",
         description=(
-            "Keep the project handoff truthful after durable work or a verified "
-            "change. This routine agent-owned CAS write uses the exact revision from "
-            "get; do not request repeated confirmation when the configured role "
-            "already authorizes the update."
+            "Perform one exact-CAS write through the authority that owns the fact. "
+            "Use target=current for Stage handoff updates, or explicitly target code, "
+            "decisions, collaboration, or delivery. Delivery remains read-only; the "
+            "canonical front enforces actor identity, project role, and operation."
         ),
         annotations=ToolAnnotations(
             title="Update a Stage with exact CAS",
@@ -129,21 +129,45 @@ def build_mcp(client: FrontClient) -> FastMCP:
     )
     def update(
         project_id: str,
-        stage_id: str,
-        body: str,
         expected_revision: str,
+        stage_id: Optional[str] = None,
+        body: Optional[str] = None,
         mode: str = "replace",
+        target: str = "current",
+        operation: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return _invoke(
-            client,
-            "update",
-            project_id,
-            {
+        if target == "current":
+            if operation is not None or parameters is not None:
+                raise ValueError(
+                    "current update does not accept authority operation or parameters"
+                )
+            if stage_id is None or body is None:
+                raise ValueError("current update requires stage_id and body")
+            arguments: Dict[str, Any] = {
                 "stage_id": stage_id,
                 "body": body,
                 "expected_revision": expected_revision,
                 "mode": mode,
-            },
+            }
+        else:
+            if stage_id is not None or body is not None or mode != "replace":
+                raise ValueError(
+                    "authority update does not accept Stage fields or mode"
+                )
+            if operation is None or parameters is None:
+                raise ValueError("authority update requires operation and parameters")
+            arguments = {
+                "target": target,
+                "operation": operation,
+                "parameters": parameters,
+                "expected_revision": expected_revision,
+            }
+        return _invoke(
+            client,
+            "update",
+            project_id,
+            arguments,
         )
 
     @server.tool(

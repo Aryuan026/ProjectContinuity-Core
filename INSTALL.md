@@ -130,6 +130,43 @@ list(project-alpha)
 get(project-alpha, stage_id=project.handoff)
 ```
 
+### Initialize optional authority projections
+
+With the front stopped, place an owner-only absolute JSON declaration outside
+the release. Use `null` for an authority the project does not use:
+
+```json
+{
+  "schema_version": 1,
+  "project_id": "project-alpha",
+  "openspec": {
+    "store_id": "project-alpha-specs",
+    "repo_url": "https://github.com/example-org/project-alpha-specs"
+  },
+  "teamai": {
+    "team_id": "project-alpha-team",
+    "repo_url": "https://github.com/example-org/project-alpha-team",
+    "reviewers": ["review-agent-b"]
+  }
+}
+```
+
+Install the delivery checkout and the selected authority checkouts/bindings:
+
+```bash
+chmod 600 /absolute/private/config/project-alpha-truth.json
+uv run project-continuity \
+  --config /absolute/private/config/config.toml \
+  truth-setup \
+  --declaration /absolute/private/config/project-alpha-truth.json
+```
+
+The command is replay-safe for an identical declaration, never starts the
+front, and refuses changed bindings or dirty/unsafe checkouts. It is the
+operator lifecycle seam for repository installation; it does not add an MCP
+tool. After starting the front, `list` must report the configured layers and
+their actual availability before any authority write is attempted.
+
 ## 6. Install the MCP adapter
 
 For a client that connects to an already-running canonical front, do not run
@@ -188,6 +225,9 @@ Positive path:
    keyword or exact ID when available.
 3. A writer rereads the handoff and performs one CAS update.
 4. Restart the front and repeat Stage/Case reads.
+5. When authority writes are enabled, exercise one bounded write against a
+   disposable reviewed repository, read the returned branch or StableRef from
+   its owning authority, and confirm the delivery layer still refuses writes.
 
 Negative path:
 

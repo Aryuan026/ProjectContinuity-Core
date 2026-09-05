@@ -59,6 +59,22 @@ class FakeLayer:
         self.status(principal_id, project_id)
         return {"stable_ref": reference.as_dict(), "body": self.layer + " body"}
 
+    def update(
+        self,
+        principal_id,
+        project_id,
+        operation,
+        arguments,
+        *,
+        expected_revision,
+    ):
+        self.status(principal_id, project_id)
+        return {
+            "arguments": dict(arguments),
+            "expected_revision": expected_revision,
+            "operation": operation,
+        }
+
 
 def test_list_reports_every_external_layer_and_does_not_hide_absence() -> None:
     plane = IntegratedTruthPlane(
@@ -147,6 +163,28 @@ def test_adapter_failure_is_bounded_before_leaving_the_truth_plane() -> None:
     with pytest.raises(TruthPlaneError, match="authority_failed") as caught:
         plane.get("reader-client", "alpha", _ref("github", "commit:alpha:one"))
     assert "/srv/" not in str(caught.value)
+
+
+def test_typed_update_routes_to_exact_owner_without_growing_the_tool_surface() -> None:
+    plane = IntegratedTruthPlane((FakeLayer("decisions", "openspec"),))
+
+    result = plane.update(
+        "reader-client",
+        "alpha",
+        "decisions",
+        "prepare_change",
+        {"change_id": "one"},
+        expected_revision="a" * 40,
+    )
+
+    assert result == {
+        "layer": "decisions",
+        "result": {
+            "arguments": {"change_id": "one"},
+            "expected_revision": "a" * 40,
+            "operation": "prepare_change",
+        },
+    }
 
 
 def test_graphify_layer_consumes_an_existing_exact_artifact(config, tmp_path: Path) -> None:

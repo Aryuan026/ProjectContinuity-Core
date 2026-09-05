@@ -180,6 +180,26 @@ class FakeFront:
             mode=mode,
         )
 
+    def update_authority(
+        self,
+        principal_id,
+        project_id,
+        layer,
+        operation,
+        arguments,
+        *,
+        expected_revision,
+    ):
+        return self._result(
+            "update_authority",
+            principal_id,
+            project_id,
+            layer=layer,
+            operation=operation,
+            arguments=dict(arguments),
+            expected_revision=expected_revision,
+        )
+
     async def promote_stage(self, principal_id, project_id, stage_id, **arguments):
         return self._result(
             "promote", principal_id, project_id, stage_id=stage_id, **arguments
@@ -375,6 +395,36 @@ def test_case_get_and_search_reuse_the_existing_get_search_tools(tmp_path: Path)
     assert get[0] == 200
     assert [call[0] for call in front.calls] == ["search_cases", "get_case"]
     assert front.calls[0][3]["match"] == "keyword"
+
+
+def test_existing_update_tool_routes_typed_authority_write(tmp_path: Path) -> None:
+    with _running(tmp_path) as (port, front):
+        response = _invoke(
+            port,
+            TOKENS["writer-client"],
+            "update",
+            {
+                "target": "code",
+                "operation": "register_committed",
+                "parameters": {"commit_sha": "a" * 40},
+                "expected_revision": "absent",
+            },
+        )
+
+    assert response[0] == 200
+    assert front.calls == [
+        (
+            "update_authority",
+            "writer-client",
+            "alpha",
+            {
+                "arguments": {"commit_sha": "a" * 40},
+                "expected_revision": "absent",
+                "layer": "code",
+                "operation": "register_committed",
+            },
+        )
+    ]
 
 
 def test_terminal_archive_timeouts_keep_the_call_capability_without_in_progress(

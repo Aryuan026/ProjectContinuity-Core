@@ -37,7 +37,7 @@ coding agent / reviewer / assistant
               |
              authenticated five-tool front
           /          |                 \
-Turritopsis Store  Cognee archive   authority read plane
+Turritopsis Store  Cognee archive   authority-routed plane
  current Stages    reviewed Cases   Graphify / OpenSpec /
                                       TeamAI / GitHub
           \          |                 /
@@ -56,8 +56,11 @@ place shown on the map.
 | `promoter` | writer tools + `promote` |
 
 The front derives the principal, actor, and project role from a private token.
-Clients cannot self-report identity. Every update carries the exact Stage
-revision it read; stale writes fail instead of overwriting newer work.
+Clients cannot self-report identity. Every update carries the exact revision of
+the owning authority that it read; stale writes fail instead of overwriting
+newer work. The same `update` tool preserves ordinary Stage CAS and can route an
+explicit write to Graphify, OpenSpec, or TeamAI. GitHub delivery remains
+read-only through ProjectContinuity.
 
 Roles describe work on one project, not a hierarchy between Agent products.
 An Agent or device that performs durable project work should normally receive
@@ -118,6 +121,20 @@ were actually consulted. Resolve returned StableRefs with
 `get(resource_ref=...)`. Use `search(scope="cases", match="keyword")` for a
 focused historical lookup and `get(promotion_id=...)` when the Case ID is known.
 
+When durable work changes an external authority, use that authority's exact
+revision and its bounded operation through the same `update` tool:
+
+| Target | Operations | Result |
+| --- | --- | --- |
+| `current` | Stage `replace`/supported donor mode | Updates the selected Stage with Turritopsis CAS. |
+| `code` | `register_committed`, `register_overlay` | Registers a reviewed Graphify artifact; committed builds use exact Git blob bytes. |
+| `decisions` | `prepare_change`, `archive_change` | Creates a review branch through the native OpenSpec lifecycle. |
+| `collaboration` | `contribute` | Creates a TeamAI/Git contribution using the authenticated actor. |
+| `delivery` | none | Returns a typed read-only refusal; GitHub remains the delivery authority. |
+
+Repository cloning, binding installation, and fast-forward refresh are operator
+lifecycle actions (`truth-setup` / `truth-refresh`), not extra MCP tools.
+
 ## Promotion and optional AI providers
 
 `promote` is a rare archival action, not a richer update. It freezes one
@@ -175,11 +192,12 @@ runtime use, adapter code, and architectural reference are recorded in
 
 Version `0.1.3` is a source-first alpha. The core front, five-tool MCP path,
 role/CAS boundary, current Stage flow, keyword/exact Case retrieval, recoverable
-promotion lifecycle, and offline Case relocation are covered by the repository
-test suite. Prebuilt `.venv`, `node_modules`, databases, credentials, and
-machine-specific service installers are intentionally not distributed. The
-canonical installation path is an exact Git checkout because the release-owned
-Skill and operations manuals intentionally remain visible beside the code.
+promotion lifecycle, authority-routed read/write plane, managed truth setup and
+refresh, and offline Case relocation are covered by the repository test suite.
+Prebuilt `.venv`, `node_modules`, databases, credentials, and machine-specific
+service installers are intentionally not distributed. The canonical
+installation path is an exact Git checkout because the release-owned Skill and
+operations manuals intentionally remain visible beside the code.
 
 ## License and credits
 

@@ -66,6 +66,19 @@ get(project.handoff) -> update(expected_revision, mode="replace")
 
 On a revision conflict, reread and reconcile. Never blind-write.
 
+If the durable fact belongs to another authority, keep using the same `update`
+tool but name the owner explicitly:
+
+- `target="code"`: `register_committed` or `register_overlay`;
+- `target="decisions"`: `prepare_change` or `archive_change`;
+- `target="collaboration"`: `contribute`;
+- `target="delivery"`: always a typed read-only refusal.
+
+Send `operation`, the operation's closed `parameters`, and the exact
+`expected_revision` returned by that authority. The authenticated principal
+still supplies the actor; the request never does. Project checkout setup and
+truth-plane refresh are stopped-front operator commands, not MCP tools.
+
 ## Promote rarely
 
 Promotion requires one coherent exact Stage revision, complete stable-ref

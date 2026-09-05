@@ -37,7 +37,7 @@ MCP tool / HTTP client
        -> TurritopsisAdapter for Stage list/search/get/update
        -> PromotionCoordinator for reviewed archive writes
        -> NativeCogneeBackend for Case get/search/promotion
-       -> IntegratedTruthPlane for Graphify/OpenSpec/TeamAI/GitHub reads
+       -> IntegratedTruthPlane for Graphify/OpenSpec/TeamAI/GitHub authority routes
 ```
 
 Archive calls run on one dedicated, persistent event loop inside the front
@@ -67,12 +67,20 @@ same project dataset.
 
 ## External authorities
 
-Graphify, OpenSpec, TeamAI/Git, and GitHub remain independent authorities, but
-their reviewed read adapters are routed through the same `list/search/get`
-surface. Cross-layer search returns partitioned results and explicit coverage;
-exact `get(resource_ref=...)` resolves the cited object at its owner. Event and
-personal-memory systems remain reference-only. ProjectContinuity never copies
-these layers into a second truth store.
+Graphify, OpenSpec, TeamAI/Git, and GitHub remain independent authorities. Their
+reviewed reads are routed through the same `list/search/get` surface; explicit
+writes use the existing `update` tool and the owning authority's exact revision.
+Graphify accepts committed or prebuilt-overlay registration, OpenSpec prepares
+or archives a change on a review branch, and TeamAI contributes through its
+native Git/PR flow. GitHub delivery stays read-only. Cross-layer search returns
+partitioned results and explicit coverage; exact `get(resource_ref=...)`
+resolves the cited object at its owner. Event and personal-memory systems remain
+reference-only. ProjectContinuity never copies these layers into a second truth
+store.
+
+Managed delivery/OpenSpec/TeamAI checkouts and private bindings are installed or
+fast-forwarded only through the stopped-front operator commands `truth-setup`
+and `truth-refresh`. They are lifecycle controls, not additional Agent tools.
 
 ## Storage and deployment
 

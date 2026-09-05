@@ -15,6 +15,7 @@ import tempfile
 import time
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
+from .auth import authenticate
 from .config import Config
 from .evidence import StableRef, sanitize_evidence
 from .github_resolver import (
@@ -37,7 +38,9 @@ from .refs import (
     teamai_reviewed_ref,
 )
 from .teamai import (
+    TeamAIContractError,
     assert_no_teamai_implicit_inputs,
+    classify_teamai_publish,
     resolve_teamai_identity,
     teamai_explicit_environment,
     teamai_readonly_recall_request,
@@ -49,6 +52,7 @@ from .truth_bindings import OpenSpecBinding, TeamAIBinding
 MAX_COMMAND_OUTPUT = 256_000
 MAX_ITEMS = 100
 MAX_WRITE_BODY = 100_000
+WRITE_TIMEOUT_SECONDS = 180
 READ_DEADLINE_SECONDS = 15.0
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _PULL_REQUEST = re.compile(r"^Merge pull request #(\d+)\b")
@@ -193,6 +197,155 @@ class OpenSpecLayer:
             ),
             "stable_ref": current.as_dict(),
         }
+
+    def update(
+        self,
+        principal_id: str,
+        project_id: str,
+        operation: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_revision: str,
+    ) -> Mapping[str, Any]:
+        """Create a validated proposal/archive branch in an isolated worktree."""
+
+        root, revision = self._root(project_id)
+        if expected_revision != revision:
+            raise AuthorityLayerError("openspec_expected_revision_conflict")
+        if operation == "prepare_change":
+            change_id, artifacts = _openspec_change_arguments(arguments)
+        elif operation == "archive_change":
+            change_id = _openspec_archive_arguments(arguments)
+            artifacts = ()
+        else:
+            raise AuthorityLayerError("openspec_update_operation_unsupported")
+        actor = _safe_actor(authenticate(self.config, principal_id).actor)
+        request_digest = _request_digest(
+            {
+                "arguments": arguments,
+                "expected_revision": expected_revision,
+                "operation": operation,
+                "project_id": project_id,
+            }
+        )
+        branch = "project-continuity/openspec/%s/%s-%s" % (
+            actor,
+            operation.replace("_", "-"),
+            change_id,
+        )
+        existing = _remote_branch(root, branch, self.binding.repo_url)
+        if existing is not None:
+            _assert_request_commit(root, existing, request_digest)
+            return {
+                "actor": actor,
+                "branch": branch,
+                "changed": False,
+                "ok": True,
+                "operation": operation,
+                "review_state": "pending",
+                "revision": existing,
+            }
+
+        with _isolated_worktree(root, revision, actor) as worktree:
+            if operation == "prepare_change":
+                self._prepare_change(worktree, change_id, artifacts)
+            else:
+                self._archive_change(worktree, change_id)
+            commit = _commit_worktree(
+                worktree,
+                actor=actor,
+                subject="[openspec] %s %s" % (operation, change_id),
+                request_digest=request_digest,
+            )
+            _push_branch(root, worktree, branch, self.binding.repo_url)
+        return {
+            "actor": actor,
+            "branch": branch,
+            "changed": True,
+            "ok": True,
+            "operation": operation,
+            "review_state": "pending",
+            "revision": commit,
+        }
+
+    def _prepare_change(
+        self,
+        worktree: Path,
+        change_id: str,
+        artifacts: Sequence[Mapping[str, str]],
+    ) -> None:
+        _json_command(
+            self.command,
+            ["new", "change", change_id, "--json"],
+            cwd=worktree,
+            label="OpenSpec",
+            timeout=WRITE_TIMEOUT_SECONDS,
+        )
+        for artifact in artifacts:
+            instructions = _json_command(
+                self.command,
+                [
+                    "instructions",
+                    artifact["artifact_id"],
+                    "--change",
+                    change_id,
+                    "--json",
+                ],
+                cwd=worktree,
+                label="OpenSpec",
+                timeout=WRITE_TIMEOUT_SECONDS,
+            )
+            output_pattern = instructions.get("outputPath")
+            change_dir = instructions.get("changeDir")
+            if not isinstance(output_pattern, str) or not isinstance(change_dir, str):
+                raise AuthorityLayerError("openspec_instructions_malformed")
+            destination = _openspec_artifact_path(
+                worktree,
+                change_dir,
+                output_pattern,
+                artifact["relative_output"],
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(artifact["body"], encoding="utf-8")
+        _json_command(
+            self.command,
+            [
+                "validate",
+                change_id,
+                "--type",
+                "change",
+                "--strict",
+                "--json",
+                "--no-interactive",
+            ],
+            cwd=worktree,
+            label="OpenSpec",
+            timeout=WRITE_TIMEOUT_SECONDS,
+        )
+
+    def _archive_change(self, worktree: Path, change_id: str) -> None:
+        _json_command(
+            self.command,
+            [
+                "validate",
+                change_id,
+                "--type",
+                "change",
+                "--strict",
+                "--json",
+                "--no-interactive",
+            ],
+            cwd=worktree,
+            label="OpenSpec",
+            timeout=WRITE_TIMEOUT_SECONDS,
+        )
+        _json_command(
+            self.command,
+            ["archive", change_id, "--yes", "--json"],
+            cwd=worktree,
+            label="OpenSpec",
+            timeout=WRITE_TIMEOUT_SECONDS,
+        )
 
     def _validated_reference(self, reference: StableRef) -> Tuple[str, str]:
         prefix = "decision:%s:" % self.binding.store_id
@@ -421,6 +574,86 @@ class TeamAILayer:
             "title": title,
         }
 
+    def update(
+        self,
+        principal_id: str,
+        project_id: str,
+        operation: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_revision: str,
+    ) -> Mapping[str, Any]:
+        """Contribute one collaboration candidate through TeamAI's PR flow."""
+
+        if operation != "contribute":
+            raise AuthorityLayerError("teamai_update_operation_unsupported")
+        title, body = _teamai_contribution_arguments(arguments)
+        root, revision = self._root(project_id)
+        if expected_revision != revision:
+            raise AuthorityLayerError("teamai_expected_revision_conflict")
+        identity = resolve_teamai_identity(self.config, principal_id, project_id)
+        runtime = self.config.paths.data_root / "truth-plane/teamai-runtime" / project_id
+        _private_directory(runtime)
+        contribution = runtime / (
+            "contribution-%s.md"
+            % _request_digest(
+                {
+                    "body": body,
+                    "expected_revision": expected_revision,
+                    "project_id": project_id,
+                    "title": title,
+                }
+            ).removeprefix("sha256:")
+        )
+        try:
+            contribution.write_text(body, encoding="utf-8")
+            contribution.chmod(0o600)
+            with self._runtime_identity(
+                root, identity, remote_auth=True
+            ) as (environment, invocation_root):
+                completed = _run_command(
+                    [
+                        str(self.node_executable),
+                        str(self.entrypoint),
+                        "contribute",
+                        "--file",
+                        str(contribution),
+                        "--title",
+                        title,
+                        "--scope",
+                        "project",
+                    ],
+                    cwd=invocation_root,
+                    label="TeamAI",
+                    environment=environment,
+                    timeout=WRITE_TIMEOUT_SECONDS,
+                )
+        finally:
+            contribution.unlink(missing_ok=True)
+        output = completed.stdout + "\n" + completed.stderr
+        try:
+            receipt = classify_teamai_publish(
+                completed.returncode,
+                output,
+                expected_repo_url=self.binding.repo_url,
+            )
+        except TeamAIContractError as exc:
+            raise AuthorityLayerError("teamai_publish_unverified") from exc
+        _clean_checkout(root)
+        if _git(root, "rev-parse", "HEAD") != revision:
+            raise AuthorityLayerError("teamai_active_checkout_changed")
+        return {
+            "actor": identity.actor_id,
+            "branch": receipt.branch,
+            "changed": True,
+            "ok": True,
+            "operation": operation,
+            "pull_request": receipt.pull_request,
+            "pull_request_url": receipt.pull_request_url,
+            "review_state": receipt.state,
+            "source_revision": revision,
+        }
+
     def _root(
         self, project_id: str, *, deadline: float | None = None
     ) -> Tuple[Path, str]:
@@ -512,7 +745,12 @@ class TeamAILayer:
 
     @contextmanager
     def _runtime_identity(
-        self, root: Path, identity: Any, *, deadline: float | None = None
+        self,
+        root: Path,
+        identity: Any,
+        *,
+        deadline: float | None = None,
+        remote_auth: bool = False,
     ):
         """Render the donor's ignored project config under a process-wide lock."""
 
@@ -531,9 +769,7 @@ class TeamAILayer:
             )
             if ignored.returncode != 0:
                 raise AuthorityLayerError("teamai_local_config_not_ignored")
-            invocation_root = Path(
-                tempfile.mkdtemp(prefix="recall-", dir=runtime)
-            )
+            invocation_root = Path(tempfile.mkdtemp(prefix="teamai-", dir=runtime))
             config_path = invocation_root / ".teamai/config.yaml"
             config_path.parent.mkdir(mode=0o700)
             local_config = {
@@ -556,7 +792,13 @@ class TeamAILayer:
                 encoding="utf-8",
             )
             config_path.chmod(0o600)
-            environment = teamai_explicit_environment()
+            environment = (
+                _managed_git_environment(self.binding.repo_url)
+                if remote_auth
+                else teamai_explicit_environment()
+            )
+            if remote_auth:
+                environment.update(teamai_explicit_environment())
             environment.update(
                 {
                     "GIT_AUTHOR_EMAIL": identity.actor_id
@@ -695,6 +937,18 @@ class GitHubDeliveryLayer:
                 raise
             raise AuthorityLayerError(str(exc)) from exc
 
+    def update(
+        self,
+        principal_id: str,
+        project_id: str,
+        operation: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_revision: str,
+    ) -> Mapping[str, Any]:
+        del principal_id, project_id, operation, arguments, expected_revision
+        raise AuthorityLayerError("delivery_is_read_only")
+
     def _root(
         self, project_id: str, *, deadline: float | None = None
     ) -> Tuple[Path, str]:
@@ -745,6 +999,137 @@ class GitHubDeliveryLayer:
             artifact_digest=canonical_digest(metadata),
             repo_url=self.config.project(project_id).repo_url,
         )
+
+
+def _openspec_change_arguments(
+    value: Mapping[str, Any],
+) -> Tuple[str, Tuple[Mapping[str, str], ...]]:
+    if not isinstance(value, dict) or set(value) != {"artifacts", "change_id"}:
+        raise AuthorityLayerError("openspec_change_arguments_malformed")
+    change_id = value.get("change_id")
+    if not isinstance(change_id, str) or not _CHANGE_ID.fullmatch(change_id):
+        raise AuthorityLayerError("openspec_change_id_malformed")
+    raw_artifacts = value.get("artifacts")
+    if not isinstance(raw_artifacts, list) or not 1 <= len(raw_artifacts) <= 12:
+        raise AuthorityLayerError("openspec_artifacts_malformed")
+    artifacts = []
+    seen = set()
+    for item in raw_artifacts:
+        if not isinstance(item, dict) or set(item) != {
+            "artifact_id",
+            "body",
+            "relative_output",
+        }:
+            raise AuthorityLayerError("openspec_artifacts_malformed")
+        artifact_id = item.get("artifact_id")
+        body = item.get("body")
+        relative = item.get("relative_output")
+        if not isinstance(artifact_id, str) or not _ARTIFACT_ID.fullmatch(artifact_id):
+            raise AuthorityLayerError("openspec_artifact_id_malformed")
+        _reviewed_body(body, "openspec_artifact_body")
+        _relative_posix(relative, "openspec_relative_output")
+        if artifact_id in seen or relative in {
+            row["relative_output"] for row in artifacts
+        }:
+            raise AuthorityLayerError("openspec_artifacts_duplicate")
+        seen.add(artifact_id)
+        artifacts.append(
+            {
+                "artifact_id": artifact_id,
+                "body": body,
+                "relative_output": relative,
+            }
+        )
+    return change_id, tuple(artifacts)
+
+
+def _openspec_archive_arguments(value: Mapping[str, Any]) -> str:
+    if not isinstance(value, dict) or set(value) != {"change_id"}:
+        raise AuthorityLayerError("openspec_archive_arguments_malformed")
+    change_id = value.get("change_id")
+    if not isinstance(change_id, str) or not _CHANGE_ID.fullmatch(change_id):
+        raise AuthorityLayerError("openspec_change_id_malformed")
+    return change_id
+
+
+def _teamai_contribution_arguments(value: Mapping[str, Any]) -> Tuple[str, str]:
+    if not isinstance(value, dict) or set(value) != {"body", "title"}:
+        raise AuthorityLayerError("teamai_contribution_arguments_malformed")
+    title = value.get("title")
+    body = value.get("body")
+    if (
+        not isinstance(title, str)
+        or not title
+        or title != title.strip()
+        or len(title) > 160
+        or "\n" in title
+        or "\r" in title
+    ):
+        raise AuthorityLayerError("teamai_contribution_title_malformed")
+    _reviewed_body(body, "teamai_contribution_body")
+    return title, body
+
+
+def _reviewed_body(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value.encode("utf-8")) > MAX_WRITE_BODY
+        or "\x00" in value
+    ):
+        raise AuthorityLayerError(field + "_malformed")
+    sanitized = sanitize_evidence(value, max_string=max(len(value), 1))
+    if sanitized != value:
+        raise AuthorityLayerError(field + "_contains_sensitive_material")
+    return value
+
+
+def _relative_posix(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 500
+        or value.startswith("/")
+        or "\\" in value
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise AuthorityLayerError(field + "_malformed")
+    return value
+
+
+def _openspec_artifact_path(
+    worktree: Path,
+    change_dir: str,
+    output_pattern: str,
+    relative_output: str,
+) -> Path:
+    import fnmatch
+
+    relative = _relative_posix(relative_output, "openspec_relative_output")
+    if not fnmatch.fnmatchcase(relative, output_pattern):
+        raise AuthorityLayerError("openspec_relative_output_mismatch")
+    raw_change = Path(change_dir)
+    change_root = raw_change if raw_change.is_absolute() else worktree / raw_change
+    try:
+        resolved_change = change_root.resolve(strict=True)
+        resolved_change.relative_to(worktree.resolve(strict=True))
+    except (OSError, ValueError) as exc:
+        raise AuthorityLayerError("openspec_change_path_unsafe") from exc
+    destination = resolved_change / relative
+    _inside(destination, resolved_change)
+    return destination
+
+
+def _request_digest(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return _digest(encoded)
 
 
 @contextmanager
@@ -812,6 +1197,88 @@ def _isolated_worktree(
             or ("worktree " + str(checkout)) in listed.stdout.splitlines()
         ):
             raise AuthorityLayerError("openspec_worktree_cleanup_failed")
+
+
+def _commit_worktree(
+    worktree: Path, *, actor: str, subject: str, request_digest: str
+) -> str:
+    _git(worktree, "add", "--", "openspec")
+    if not _git(worktree, "status", "--porcelain=v1", "--", "openspec"):
+        raise AuthorityLayerError("openspec_update_created_no_change")
+    environment = _managed_git_environment()
+    environment.update(
+        {
+            "GIT_AUTHOR_EMAIL": actor + "@project-continuity.invalid",
+            "GIT_AUTHOR_NAME": actor,
+            "GIT_COMMITTER_EMAIL": actor + "@project-continuity.invalid",
+            "GIT_COMMITTER_NAME": actor,
+        }
+    )
+    _command(
+        [
+            "git",
+            "commit",
+            "-m",
+            subject,
+            "-m",
+            "ProjectContinuity-Request: " + request_digest,
+        ],
+        cwd=worktree,
+        label="Git",
+        environment=environment,
+        timeout=WRITE_TIMEOUT_SECONDS,
+    )
+    return _git(worktree, "rev-parse", "HEAD")
+
+
+def _push_branch(
+    root: Path, worktree: Path, branch: str, expected_remote: str
+) -> None:
+    _managed_git_config(root, expected_remote)
+    _command(
+        ["git", "push", expected_remote, "HEAD:refs/heads/" + branch],
+        cwd=worktree,
+        label="Git",
+        environment=_managed_git_environment(expected_remote),
+        timeout=WRITE_TIMEOUT_SECONDS,
+    )
+
+
+def _remote_branch(root: Path, branch: str, expected_remote: str) -> str | None:
+    _managed_git_config(root, expected_remote)
+    output = _command(
+        [
+            "git",
+            "ls-remote",
+            "--heads",
+            expected_remote,
+            "refs/heads/" + branch,
+        ],
+        cwd=root,
+        label="Git",
+        environment=_managed_git_environment(expected_remote),
+        timeout=WRITE_TIMEOUT_SECONDS,
+    ).strip()
+    if not output:
+        return None
+    fields = output.split("\t")
+    if len(fields) != 2 or not _COMMIT.fullmatch(fields[0]):
+        raise AuthorityLayerError("git_remote_branch_malformed")
+    _command(
+        ["git", "fetch", "--no-tags", expected_remote, fields[0]],
+        cwd=root,
+        label="Git",
+        environment=_managed_git_environment(expected_remote),
+        timeout=WRITE_TIMEOUT_SECONDS,
+    )
+    return fields[0]
+
+
+def _assert_request_commit(root: Path, revision: str, request_digest: str) -> None:
+    body = _git(root, "show", "-s", "--format=%B", revision)
+    marker = "ProjectContinuity-Request: " + request_digest
+    if marker not in body.splitlines():
+        raise AuthorityLayerError("authority_branch_request_conflict")
 
 
 def _private_directory(path: Path) -> None:

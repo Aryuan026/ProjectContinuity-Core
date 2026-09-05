@@ -155,6 +155,7 @@ class GraphRegistry:
         snapshot_id: str,
         generated_at: str,
         promote: bool = True,
+        expected_revision: Optional[str] = None,
     ) -> GraphArtifact:
         project = self.config.project(project_id)
         revision = _git_revision(commit_sha, "commit_sha")
@@ -170,7 +171,11 @@ class GraphRegistry:
             output_root=output_root,
             commit_sha=revision,
         )
-        self._register(artifact, "current_canonical" if promote else None)
+        self._register(
+            artifact,
+            "current_canonical" if promote else None,
+            expected_revision=expected_revision,
+        )
         return artifact
 
     def register_overlay(
@@ -182,6 +187,7 @@ class GraphRegistry:
         snapshot_id: str,
         evidence_time: str,
         promote: bool = True,
+        expected_revision: Optional[str] = None,
     ) -> GraphArtifact:
         project = self.config.project(project_id)
         revision = _git_revision(base_sha, "base_sha")
@@ -201,7 +207,11 @@ class GraphRegistry:
             base_sha=revision,
             overlay_digest=digest,
         )
-        self._register(artifact, "working_overlay" if promote else None)
+        self._register(
+            artifact,
+            "working_overlay" if promote else None,
+            expected_revision=expected_revision,
+        )
         return artifact
 
     def resolve(
@@ -257,7 +267,13 @@ class GraphRegistry:
     def graph_path(self, artifact: GraphArtifact) -> Path:
         return self._artifact_output_root(artifact) / "graphify-out" / "graph.json"
 
-    def _register(self, artifact: GraphArtifact, selector: Optional[str]) -> None:
+    def _register(
+        self,
+        artifact: GraphArtifact,
+        selector: Optional[str],
+        *,
+        expected_revision: Optional[str],
+    ) -> None:
         with _registry_lock(self.root):
             state = self._load_state()
             projects = state["projects"]
@@ -272,6 +288,22 @@ class GraphRegistry:
             )
             if project_state.get("repo_url") != artifact.repo_url:
                 raise GraphRegistryConflict("project registry repo_url is immutable")
+            if expected_revision is not None and selector is not None:
+                current_id = project_state.get(selector)
+                current_revision = "absent"
+                if current_id is not None:
+                    current_record = project_state["artifacts"].get(current_id)
+                    if not isinstance(current_record, dict):
+                        raise GraphRegistryConflict(
+                            "graph selector points to a missing artifact"
+                        )
+                    current_revision = _artifact_from_dict(
+                        current_record
+                    ).stable_ref.version
+                if current_revision != expected_revision:
+                    raise GraphRegistryConflict(
+                        "graph expected revision changed before commit"
+                    )
             existing = project_state["artifacts"].get(artifact.snapshot_id)
             record = artifact.as_dict()
             if existing is not None and existing != record:

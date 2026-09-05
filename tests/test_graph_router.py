@@ -206,6 +206,32 @@ def test_new_commit_advances_only_canonical_and_old_snapshot_remains(config) -> 
     assert registry.readback()["projects"]["alpha"]["working_overlay"] is None
 
 
+def test_selector_cas_is_rechecked_inside_registry_commit(config) -> None:
+    registry = GraphRegistry(config)
+    for commit, snapshot in ((COMMIT_A, "alpha-a"), (COMMIT_B, "alpha-b")):
+        root = registry.committed_output_root("alpha", commit, snapshot, create=True)
+        _write_artifact(root, commit, label=snapshot)
+
+    first = registry.register_committed(
+        project_id="alpha",
+        commit_sha=COMMIT_A,
+        snapshot_id="alpha-a",
+        generated_at=NOW,
+        expected_revision="absent",
+    )
+    with pytest.raises(GraphRegistryConflict, match="changed before commit"):
+        registry.register_committed(
+            project_id="alpha",
+            commit_sha=COMMIT_B,
+            snapshot_id="alpha-b",
+            generated_at=NOW,
+            expected_revision="absent",
+        )
+
+    assert registry.resolve("alpha", selector="current_canonical") == first
+    assert "alpha-b" not in registry.readback()["projects"]["alpha"]["artifacts"]
+
+
 @pytest.mark.parametrize("failure", ("stale", "empty", "coverage"))
 def test_failed_graph_never_moves_current_pointer(config, failure: str) -> None:
     registry = GraphRegistry(config)

@@ -96,6 +96,34 @@ def test_agent_tool_timeout_outlives_mcp_and_front_deadlines() -> None:
     assert "operation_state=in_progress" in install
 
 
+def test_public_docs_route_authority_writes_through_the_same_update_tool() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    schema = (ROOT / "SCHEMA.md").read_text(encoding="utf-8")
+    install = (ROOT / "INSTALL.md").read_text(encoding="utf-8")
+    operations = (ROOT / "OPERATIONS.md").read_text(encoding="utf-8")
+    skill = (ROOT / "skills/project-continuity/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    for operation in (
+        "register_committed",
+        "register_overlay",
+        "prepare_change",
+        "archive_change",
+        "contribute",
+    ):
+        assert operation in readme
+        assert operation in schema
+        assert operation in skill
+    assert "GitHub delivery remains" in readme
+    assert "read-only through ProjectContinuity" in readme
+    assert "`delivery`: read-only" in skill
+    assert "truth-setup" in install
+    assert "truth-refresh" in operations
+    assert "does not add an MCP" in install
+    assert "operator lifecycle seam" in install
+
+
 def test_literal_teamai_wrapper_is_release_owned_and_in_the_source_artifact() -> None:
     wrapper = ROOT / "vendor/teamai-runtime/project-continuity-literal-recall.mjs"
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")

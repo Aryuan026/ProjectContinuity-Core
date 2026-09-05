@@ -409,6 +409,30 @@ class CognitionFront:
         except KeyError as exc:
             raise self.acl.unavailable_stage(project_id) from exc
 
+    def update_authority(
+        self,
+        principal_id: str,
+        project_id: str,
+        layer: str,
+        operation: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_revision: str,
+    ) -> Dict[str, Any]:
+        """Route a typed write without moving authority into this front."""
+
+        self.acl.grant(principal_id, project_id, "update")
+        if not isinstance(arguments, dict):
+            raise ValueError("authority update arguments must be an object")
+        return self._truth_plane.update(
+            principal_id,
+            project_id,
+            layer,
+            operation,
+            arguments,
+            expected_revision=expected_revision,
+        )
+
     async def promote_stage(
         self,
         principal_id: str,
