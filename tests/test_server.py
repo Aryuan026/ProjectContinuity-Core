@@ -514,7 +514,16 @@ def test_authority_writes_retain_one_worker_and_expose_in_progress_identity(
 
         front.release.set()
         assert front.finished.wait(1)
-        retry = _invoke(port, TOKENS["writer-client"], "update", request)
+        deadline = time.monotonic() + 1
+        while True:
+            retry = _invoke(port, TOKENS["writer-client"], "update", request)
+            if retry[0] == 200:
+                break
+            assert retry[0] == 503
+            assert retry[1]["operation_id"] == timeout_receipt["operation_id"]
+            if time.monotonic() >= deadline:
+                pytest.fail("retained authority worker did not release ownership")
+            time.sleep(0.01)
         assert retry[0] == 200
         assert front.maximum == 1
     finally:
