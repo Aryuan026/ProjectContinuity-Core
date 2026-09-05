@@ -366,8 +366,8 @@ def teamai_explicit_environment() -> Dict[str, str]:
     return dict(EXPLICIT_ENVIRONMENT)
 
 
-def teamai_readonly_recall_argv(query: str) -> Tuple[str, ...]:
-    """Use donor recall while suppressing its vote and quality-cache writers."""
+def teamai_readonly_recall_request(query: str) -> str:
+    """Encode one literal donor recall query for the release-owned wrapper."""
 
     if (
         not isinstance(query, str)
@@ -377,7 +377,7 @@ def teamai_readonly_recall_argv(query: str) -> Tuple[str, ...]:
         or any(ord(character) < 32 or ord(character) == 127 for character in query)
     ):
         raise TeamAIContractError("recall query must be a bounded trimmed string")
-    return ("--dry-run", "recall", query)
+    return json.dumps({"query": query}, ensure_ascii=False, separators=(",", ":"))
 
 
 def classify_teamai_publish(

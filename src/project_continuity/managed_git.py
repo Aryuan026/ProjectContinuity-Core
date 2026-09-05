@@ -69,6 +69,9 @@ def managed_git_environment(remote: Optional[str] = None) -> Dict[str, str]:
         {
             "CI": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
             "HOME": _DETACHED_HOME,
@@ -90,9 +93,9 @@ def managed_git_environment(remote: Optional[str] = None) -> Dict[str, str]:
     ).decode("ascii")
     environment.update(
         {
-            "GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": "http.%s.extraheader" % remote,
-            "GIT_CONFIG_VALUE_0": "Authorization: Basic " + credential,
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_1": "http.%s.extraheader" % remote,
+            "GIT_CONFIG_VALUE_1": "Authorization: Basic " + credential,
         }
     )
     return environment

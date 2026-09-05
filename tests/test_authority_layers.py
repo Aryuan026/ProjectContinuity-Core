@@ -13,6 +13,7 @@ from project_continuity.authority_layers import (
     GitHubDeliveryLayer,
     OpenSpecLayer,
     TeamAILayer,
+    _isolated_worktree,
     _managed_repo,
 )
 from project_continuity.managed_git import managed_git_environment
@@ -149,7 +150,7 @@ else:
 def _fake_node(path: Path) -> Path:
     path.write_text(
         """#!/usr/bin/env python3
-import os, pathlib, sys
+import json, os, pathlib, sys
 if 'contribute' in sys.argv:
     expected = {
         'GIT_AUTHOR_EMAIL':'writer-agent@project-continuity.invalid',
@@ -165,7 +166,11 @@ if 'contribute' in sys.argv:
     print('Branch teamai/push/writer-agent/canary has been pushed')
     print('Pull Request created: https://github.com/example/alpha-team/pull/11')
 else:
-    query = sys.argv[-1]
+    if any(key.startswith('GIT_CONFIG_VALUE_') for key in os.environ):
+        raise SystemExit(8)
+    if any('Authorization:' in value or 'managed_github_token' in value for value in os.environ.values()):
+        raise SystemExit(8)
+    query = json.load(sys.stdin)['query']
     if query == 'unrelated':
         print('ℹ No matching learnings found for "unrelated".')
     else:
@@ -253,7 +258,9 @@ def test_openspec_native_cli_search_and_exact_get(config, tmp_path: Path) -> Non
     assert str(root) not in str(fetched)
 
 
-def test_teamai_native_recall_and_reviewed_exact_get(config, tmp_path: Path) -> None:
+def test_teamai_native_recall_and_reviewed_exact_get(
+    config, tmp_path: Path, monkeypatch
+) -> None:
     remote = "https://github.com/example/alpha-team"
     root = _repo(config.paths.data_root / "team/alpha", remote)
     (root / ".gitignore").write_text(
@@ -295,6 +302,12 @@ def test_teamai_native_recall_and_reviewed_exact_get(config, tmp_path: Path) -> 
         _fake_node(tmp_path / "node"),
         entrypoint,
     )
+    token_dir = tmp_path / "credentials"
+    token_dir.mkdir(mode=0o700)
+    token_file = token_dir / "github.token"
+    token_file.write_text("managed_github_token_value_000001\n", encoding="ascii")
+    token_file.chmod(0o600)
+    monkeypatch.setenv("PROJECT_CONTINUITY_GITHUB_TOKEN_FILE", str(token_file))
 
     found = layer.search("reader-client", "alpha", "五工具", limit=8)
     reference = _ref(found[0]["reviewed_matches"][0]["stable_ref"])
@@ -306,6 +319,106 @@ def test_teamai_native_recall_and_reviewed_exact_get(config, tmp_path: Path) -> 
     assert "五工具" in fetched["content"]
 
     assert layer.search("reader-client", "alpha", "unrelated", limit=8) == []
+
+
+def test_openspec_rejects_forged_revision_before_any_git_worktree_mutation(
+    config, tmp_path: Path
+) -> None:
+    remote = "https://github.com/example/alpha-specs"
+    root = _repo(config.paths.data_root / "openspec/alpha", remote)
+    (root / "openspec").mkdir()
+    (root / "openspec/config.yaml").write_text(
+        "schema: spec-driven\n", encoding="utf-8"
+    )
+    _git(root, "add", "openspec")
+    _git(root, "commit", "-m", "record exact decision")
+    layer = OpenSpecLayer(
+        config,
+        OpenSpecBinding("alpha-specs", remote),
+        _fake_openspec(tmp_path / "openspec-forged-ref"),
+    )
+    reference = dict(
+        layer.search("reader-client", "alpha", "五工具", limit=8)[0][
+            "stable_ref"
+        ]
+    )
+    reference["version"] = "--lock"
+    metadata = root / ".git/worktrees"
+    before = _filesystem_snapshot(metadata)
+
+    with pytest.raises(AuthorityLayerError, match="openspec_reference_invalid"):
+        layer.get("reader-client", "alpha", _ref(reference))
+
+    assert _filesystem_snapshot(metadata) == before
+
+
+def test_openspec_exact_get_disables_post_checkout_hook(
+    config, tmp_path: Path
+) -> None:
+    remote = "https://github.com/example/alpha-specs"
+    root = _repo(config.paths.data_root / "openspec/alpha", remote)
+    spec = root / "openspec/specs/authority-contract/spec.md"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("hook-free exact decision\n", encoding="utf-8")
+    _git(root, "add", "openspec")
+    _git(root, "commit", "-m", "record hook-free decision")
+    marker = tmp_path / "post-checkout-ran"
+    hook = root / ".git/hooks/post-checkout"
+    hook.write_text("#!/bin/sh\ntouch '%s'\n" % marker, encoding="utf-8")
+    hook.chmod(0o700)
+    layer = OpenSpecLayer(
+        config,
+        OpenSpecBinding("alpha-specs", remote),
+        _historical_openspec(tmp_path / "openspec-hook"),
+    )
+    reference = _ref(
+        layer.search("reader-client", "alpha", "hook-free", limit=8)[0][
+            "stable_ref"
+        ]
+    )
+
+    fetched = layer.get("reader-client", "alpha", reference)
+
+    assert fetched["payload"]["summary"] == "hook-free exact decision"
+    assert not marker.exists()
+
+
+def test_openspec_worktree_cleanup_removes_locked_metadata(
+    config, tmp_path: Path
+) -> None:
+    root = _repo(
+        config.paths.data_root / "openspec/alpha",
+        "https://github.com/example/alpha-specs",
+    )
+    revision = _git(root, "rev-parse", "HEAD")
+
+    with _isolated_worktree(root, revision, "locked-test") as snapshot:
+        _git(root, "worktree", "lock", str(snapshot))
+
+    assert _filesystem_snapshot(root / ".git/worktrees") == {}
+
+
+def test_managed_git_environment_disables_hooks_and_composes_remote_auth(
+    tmp_path: Path, monkeypatch
+) -> None:
+    local = managed_git_environment()
+    assert local["GIT_CONFIG_COUNT"] == "1"
+    assert local["GIT_CONFIG_KEY_0"] == "core.hooksPath"
+    assert local["GIT_CONFIG_VALUE_0"] == os.devnull
+
+    token_dir = tmp_path / "credentials"
+    token_dir.mkdir(mode=0o700)
+    token_file = token_dir / "github.token"
+    token_file.write_text("managed_github_token_value_000001\n", encoding="ascii")
+    token_file.chmod(0o600)
+    monkeypatch.setenv("PROJECT_CONTINUITY_GITHUB_TOKEN_FILE", str(token_file))
+    remote = "https://github.com/example/private"
+    authenticated = managed_git_environment(remote)
+    assert authenticated["GIT_CONFIG_COUNT"] == "2"
+    assert authenticated["GIT_CONFIG_KEY_0"] == "core.hooksPath"
+    assert authenticated["GIT_CONFIG_VALUE_0"] == os.devnull
+    assert authenticated["GIT_CONFIG_KEY_1"] == "http.%s.extraheader" % remote
+    assert authenticated["GIT_CONFIG_VALUE_1"].startswith("Authorization: Basic ")
 
 
 def test_teamai_read_deadline_includes_command_lock_wait(
@@ -647,3 +760,19 @@ def _ref(value):
     from project_continuity.evidence import StableRef
 
     return StableRef.from_dict(value)
+
+
+def _filesystem_snapshot(root: Path):
+    if not root.exists():
+        return {}
+    return {
+        path.relative_to(root).as_posix(): (
+            "symlink:" + os.readlink(path)
+            if path.is_symlink()
+            else "directory"
+            if path.is_dir()
+            else path.read_bytes()
+        )
+        for path in root.rglob("*")
+        if path.is_symlink() or path.is_dir() or path.is_file()
+    }

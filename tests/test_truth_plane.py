@@ -220,8 +220,12 @@ def test_installed_builder_discovers_present_layers_and_types_absence(
         / "vendor/openspec-runtime/node_modules/@fission-ai/openspec/bin/openspec.js"
     )
     teamai = release_root / "vendor/teamai-runtime/node_modules/teamai-cli/dist/index.js"
+    teamai_literal_recall = (
+        release_root
+        / "vendor/teamai-runtime/project-continuity-literal-recall.mjs"
+    )
     node = release_root / "vendor/node"
-    for path in (graphify, openspec, teamai, node):
+    for path in (graphify, openspec, teamai, teamai_literal_recall, node):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("runtime\n", encoding="utf-8")
 

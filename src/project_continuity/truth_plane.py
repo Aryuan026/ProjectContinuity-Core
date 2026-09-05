@@ -405,14 +405,26 @@ def build_installed_truth_plane(config: Config) -> IntegratedTruthPlane:
     teamai_entrypoint = (
         release_root / "vendor/teamai-runtime/node_modules/teamai-cli/dist/index.js"
     )
+    teamai_literal_recall = (
+        release_root
+        / "vendor/teamai-runtime/project-continuity-literal-recall.mjs"
+    )
     teamai_projects: Dict[str, LayerAdapter] = {}
-    if node is not None and teamai_entrypoint.is_file():
+    if (
+        node is not None
+        and teamai_entrypoint.is_file()
+        and teamai_literal_recall.is_file()
+    ):
         for project_id in bindings.project_ids():
             binding = bindings.project(project_id).teamai
             if binding is not None:
                 try:
                     teamai_projects[project_id] = TeamAILayer(
-                        config, binding, node, teamai_entrypoint
+                        config,
+                        binding,
+                        node,
+                        teamai_entrypoint,
+                        teamai_literal_recall,
                     )
                 except AuthorityLayerError:
                     teamai_projects[project_id] = UnavailableLayerAdapter(
@@ -425,7 +437,11 @@ def build_installed_truth_plane(config: Config) -> IntegratedTruthPlane:
             teamai_projects,
             missing_reason=(
                 "teamai_binding_absent"
-                if node is not None and teamai_entrypoint.is_file()
+                if (
+                    node is not None
+                    and teamai_entrypoint.is_file()
+                    and teamai_literal_recall.is_file()
+                )
                 else "teamai_runtime_absent"
             ),
         )

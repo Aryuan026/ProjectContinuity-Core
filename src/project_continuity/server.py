@@ -430,18 +430,23 @@ class FrontApplication:
         )
         if scope not in {"auto", "all"}:
             return base
-        return self._run_archive(
-            lambda: self.front.complete_project_search(
-                base,
-                principal_id,
-                project_id,
-                arguments["query"],
-                match=arguments.get("match", ""),
-                limit=arguments.get("limit", 8),
-            ),
-            timeout=CASE_SEARCH_TIMEOUT_SECONDS,
-            capability="case_search",
-        )
+        try:
+            return self._run_archive(
+                lambda: self.front.complete_project_search(
+                    base,
+                    principal_id,
+                    project_id,
+                    arguments["query"],
+                    match=arguments.get("match", ""),
+                    limit=arguments.get("limit", 8),
+                ),
+                timeout=CASE_SEARCH_TIMEOUT_SECONDS,
+                capability="case_search",
+            )
+        except ArchiveOperationBusy:
+            return _search_with_archive_gap(base, "history_archive_busy")
+        except ArchiveOperationTimeout:
+            return _search_with_archive_gap(base, "history_archive_timeout")
 
     def _get(
         self, principal_id: str, project_id: str, arguments: Mapping[str, Any]
@@ -770,6 +775,29 @@ def _list_with_archive_gap(base: Mapping[str, Any], reason: str) -> Dict[str, An
         "failed": dict(external["failed"]),
         "complete": False,
     }
+    return result
+
+
+def _search_with_archive_gap(base: Mapping[str, Any], reason: str) -> Dict[str, Any]:
+    result = dict(base)
+    results = dict(result["results"])
+    results["history"] = []
+    coverage = dict(result["coverage"])
+    consulted = list(coverage["consulted"])
+    if "history" not in consulted:
+        consulted.insert(1 if "current" in consulted else 0, "history")
+    unavailable = dict(coverage["unavailable"])
+    unavailable["history"] = reason
+    failed = dict(coverage["failed"])
+    result["results"] = results
+    result["coverage"] = {
+        "consulted": consulted,
+        "matched": list(coverage["matched"]),
+        "unavailable": unavailable,
+        "failed": failed,
+        "complete": False,
+    }
+    result["ok"] = not failed
     return result
 
 

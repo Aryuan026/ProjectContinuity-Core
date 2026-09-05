@@ -12,3 +12,9 @@ Use `npm ci --ignore-scripts` in an isolated runtime directory. Do not install
 globally and do not commit `node_modules`. ProjectContinuity verifies the exact
 package, integrity, registry origin, and security overrides before a deployment
 may install it. This lock does not install or configure an agent host.
+
+`project-continuity-literal-recall.mjs` is ProjectContinuity adapter code, not
+copied TeamAI source. It passes one bounded JSON query to the pinned donor's
+native `recall` action without exposing TeamAI's sibling CLI subcommands. Keep
+that wrapper in the immutable release and rerun the literal-query tests whenever
+the TeamAI coordinate changes.

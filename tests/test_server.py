@@ -789,6 +789,134 @@ def test_complete_list_timeout_preserves_external_truth_and_reports_history_gap(
         server_thread.join(timeout=3)
 
 
+def test_integrated_search_preserves_five_layers_while_history_is_timeout_or_busy(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class BlockingSearchFront(FakeFront):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.finished = threading.Event()
+            self.active = 0
+            self.maximum = 0
+            self.state_lock = threading.Lock()
+
+        def search_project_base(self, *args, **kwargs):
+            result = super().search_project_base(*args, **kwargs)
+            result["results"] = {
+                "current": [{"id": "handoff"}],
+                "code": [{"id": "graph"}],
+                "decisions": [{"id": "decision"}],
+                "collaboration": [{"id": "learning"}],
+                "delivery": [{"id": "commit"}],
+            }
+            result["coverage"] = {
+                "consulted": [
+                    "current",
+                    "code",
+                    "decisions",
+                    "collaboration",
+                    "delivery",
+                ],
+                "matched": [
+                    "current",
+                    "code",
+                    "decisions",
+                    "collaboration",
+                    "delivery",
+                ],
+                "unavailable": {},
+                "failed": {},
+                "complete": True,
+            }
+            return result
+
+        async def complete_project_search(self, base, *args, **kwargs):
+            with self.state_lock:
+                self.active += 1
+                self.maximum = max(self.maximum, self.active)
+            self.entered.set()
+            try:
+                await asyncio.to_thread(self.release.wait, 2)
+                return await super().complete_project_search(
+                    base, *args, **kwargs
+                )
+            finally:
+                with self.state_lock:
+                    self.active -= 1
+                self.finished.set()
+
+    config = load_config(write_config(tmp_path / "runtime"))
+    credentials = _credentials(config, tmp_path / "credentials")
+    front = BlockingSearchFront()
+    server = create_server(config, credentials, port=0, front=front)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    port = server.server_address[1]
+    monkeypatch.setattr(
+        "project_continuity.server.CASE_SEARCH_TIMEOUT_SECONDS", 0.02
+    )
+    try:
+        timeout = _invoke(
+            port,
+            TOKENS["reader-client"],
+            "search",
+            {"scope": "auto", "query": "continuity"},
+        )
+        assert front.entered.wait(1)
+        busy = _invoke(
+            port,
+            TOKENS["reader-client"],
+            "search",
+            {"scope": "all", "query": "continuity"},
+        )
+        health = _request(port, "GET", "/health")
+
+        assert timeout[0] == busy[0] == health[0] == 200
+        for response, reason in (
+            (timeout, "history_archive_timeout"),
+            (busy, "history_archive_busy"),
+        ):
+            result = response[1]["result"]
+            assert set(result["results"]) == {
+                "current",
+                "history",
+                "code",
+                "decisions",
+                "collaboration",
+                "delivery",
+            }
+            assert result["results"]["history"] == []
+            assert result["coverage"]["unavailable"] == {"history": reason}
+            assert result["coverage"]["complete"] is False
+            assert result["ok"] is True
+        assert front.active == front.maximum == 1
+
+        front.release.set()
+        assert front.finished.wait(1)
+        deadline = time.monotonic() + 1
+        while True:
+            recovered = _invoke(
+                port,
+                TOKENS["reader-client"],
+                "search",
+                {"scope": "auto", "query": "continuity"},
+            )
+            if recovered[1]["result"]["coverage"]["complete"]:
+                break
+            if time.monotonic() >= deadline:
+                pytest.fail("retained history worker did not release ownership")
+            time.sleep(0.01)
+        assert recovered[0] == 200
+        assert front.maximum == 1
+    finally:
+        front.release.set()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
+
+
 def test_unconfigured_case_semantic_search_is_typed_and_bounded(tmp_path: Path) -> None:
     with _running(tmp_path) as (port, front):
         async def unavailable(*_args, **_kwargs):

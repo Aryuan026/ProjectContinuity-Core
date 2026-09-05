@@ -94,3 +94,15 @@ def test_agent_tool_timeout_outlives_mcp_and_front_deadlines() -> None:
     assert "MCP adapter's 90-second front timeout" in install
     assert "bounded 60-second archive timeout" in install
     assert "operation_state=in_progress" in install
+
+
+def test_literal_teamai_wrapper_is_release_owned_and_in_the_source_artifact() -> None:
+    wrapper = ROOT / "vendor/teamai-runtime/project-continuity-literal-recall.mjs"
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    runtime_readme = (ROOT / "vendor/teamai-runtime/README.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert wrapper.is_file()
+    assert "recursive-include vendor/teamai-runtime *.json *.md *.mjs" in manifest
+    assert "native `recall` action" in runtime_readme

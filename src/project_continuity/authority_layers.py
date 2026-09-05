@@ -40,7 +40,7 @@ from .teamai import (
     assert_no_teamai_implicit_inputs,
     resolve_teamai_identity,
     teamai_explicit_environment,
-    teamai_readonly_recall_argv,
+    teamai_readonly_recall_request,
     verify_teamai_guard_documents,
 )
 from .truth_bindings import OpenSpecBinding, TeamAIBinding
@@ -168,12 +168,8 @@ class OpenSpecLayer:
     ) -> Mapping[str, Any]:
         del principal_id
         deadline = _deadline()
+        item_id, kind = self._validated_reference(reference)
         root, _revision = self._root(project_id, deadline=deadline)
-        prefix = "decision:%s:" % self.binding.store_id
-        if not reference.object_id.startswith(prefix):
-            raise AuthorityLayerError("openspec_reference_store_mismatch")
-        item_id = reference.object_id[len(prefix) :]
-        kind = "spec" if reference.projection == "current" else "change"
         with _isolated_worktree(
             root, reference.version, "readonly", deadline=deadline
         ) as snapshot:
@@ -197,6 +193,30 @@ class OpenSpecLayer:
             ),
             "stable_ref": current.as_dict(),
         }
+
+    def _validated_reference(self, reference: StableRef) -> Tuple[str, str]:
+        prefix = "decision:%s:" % self.binding.store_id
+        if not reference.object_id.startswith(prefix):
+            raise AuthorityLayerError("openspec_reference_invalid")
+        item_id = reference.object_id[len(prefix) :]
+        kinds = {"current": "spec", "proposal": "change"}
+        kind = kinds.get(reference.projection or "")
+        if kind is None:
+            raise AuthorityLayerError("openspec_reference_invalid")
+        try:
+            expected = openspec_decision_ref(
+                store_id=self.binding.store_id,
+                decision_id=item_id,
+                revision=reference.version,
+                artifact_digest=reference.digest,
+                state=reference.projection,
+                repo_url=self.binding.repo_url,
+            )
+        except ValueError as exc:
+            raise AuthorityLayerError("openspec_reference_invalid") from exc
+        if reference != expected:
+            raise AuthorityLayerError("openspec_reference_invalid")
+        return item_id, kind
 
     def _root(
         self, project_id: str, *, deadline: float | None = None
@@ -283,11 +303,20 @@ class TeamAILayer:
         binding: TeamAIBinding,
         node_executable: Path,
         entrypoint: Path,
+        literal_recall_wrapper: Path | None = None,
     ) -> None:
         self.config = config
         self.binding = binding
         self.node_executable = _executable(node_executable, "Node")
         self.entrypoint = _file(entrypoint, "TeamAI entrypoint")
+        if literal_recall_wrapper is None:
+            literal_recall_wrapper = (
+                Path(__file__).resolve().parents[2]
+                / "vendor/teamai-runtime/project-continuity-literal-recall.mjs"
+            )
+        self.literal_recall_wrapper = _file(
+            literal_recall_wrapper, "TeamAI literal recall wrapper"
+        )
         self.root_base = config.paths.data_root / "team"
 
     def status(self, principal_id: str, project_id: str) -> Mapping[str, Any]:
@@ -316,17 +345,20 @@ class TeamAILayer:
         root, _revision = self._root(project_id, deadline=deadline)
         identity = resolve_teamai_identity(self.config, principal_id, project_id)
         normalized_query = _query(query)
-        with self._runtime_identity(root, identity, deadline=deadline) as environment:
+        with self._runtime_identity(
+            root, identity, deadline=deadline
+        ) as (environment, invocation_root):
             recall = _command(
                 [
                     str(self.node_executable),
+                    str(self.literal_recall_wrapper),
                     str(self.entrypoint),
-                    *teamai_readonly_recall_argv(normalized_query),
                 ],
-                cwd=root,
+                cwd=invocation_root,
                 label="TeamAI",
                 environment=environment,
                 timeout=_remaining_timeout(deadline),
+                input_text=teamai_readonly_recall_request(normalized_query),
             )
         recall_hits = _teamai_recall_hit_count(recall, normalized_query)
         needle = query.casefold()
@@ -490,23 +522,24 @@ class TeamAILayer:
         with lock_path.open("a+b") as lock:
             os.fchmod(lock.fileno(), 0o600)
             _teamai_lock(lock, deadline=deadline)
-            config_path = root / ".teamai/config.yaml"
             ignored = _run_command(
                 ["git", "check-ignore", "-q", ".teamai/config.yaml"],
                 cwd=root,
                 label="TeamAI",
-                environment=_managed_git_environment(self.binding.repo_url),
+                environment=_managed_git_environment(),
                 timeout=_remaining_timeout(deadline),
             )
             if ignored.returncode != 0:
                 raise AuthorityLayerError("teamai_local_config_not_ignored")
-            preimage = config_path.read_bytes() if config_path.exists() else None
-            if config_path.is_symlink():
-                raise AuthorityLayerError("teamai_local_config_unsafe")
+            invocation_root = Path(
+                tempfile.mkdtemp(prefix="recall-", dir=runtime)
+            )
+            config_path = invocation_root / ".teamai/config.yaml"
+            config_path.parent.mkdir(mode=0o700)
             local_config = {
                 "additionalRoles": [],
                 "inheritUserScope": False,
-                "projectRoot": str(root),
+                "projectRoot": str(invocation_root),
                 "recallEnabled": False,
                 "repo": {
                     "businessRepoRoot": str(root),
@@ -523,8 +556,7 @@ class TeamAILayer:
                 encoding="utf-8",
             )
             config_path.chmod(0o600)
-            environment = _managed_git_environment(self.binding.repo_url)
-            environment.update(teamai_explicit_environment())
+            environment = teamai_explicit_environment()
             environment.update(
                 {
                     "GIT_AUTHOR_EMAIL": identity.actor_id
@@ -534,17 +566,13 @@ class TeamAILayer:
                     + "@project-continuity.invalid",
                     "GIT_COMMITTER_NAME": identity.actor_id,
                     "HOME": str(runtime),
-                    "TEAMAI_CACHE_DIR": str(runtime / ".teamai/cache/repos"),
+                    "TEAMAI_CACHE_DIR": str(invocation_root / ".teamai/cache/repos"),
                 }
             )
             try:
-                yield environment
+                yield environment, invocation_root
             finally:
-                if preimage is None:
-                    config_path.unlink(missing_ok=True)
-                else:
-                    config_path.write_bytes(preimage)
-                    config_path.chmod(0o600)
+                shutil.rmtree(invocation_root, ignore_errors=True)
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
@@ -737,14 +765,23 @@ def _isolated_worktree(
             "worktree",
             "add",
             "--detach",
+            "--",
             str(checkout),
             revision,
             timeout=_remaining_timeout(deadline),
         )
         yield checkout
     finally:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", str(checkout)],
+        remove = subprocess.run(
+            [
+                "git",
+                "worktree",
+                "remove",
+                "--force",
+                "--force",
+                "--",
+                str(checkout),
+            ],
             cwd=root,
             env=_managed_git_environment(),
             check=False,
@@ -752,14 +789,29 @@ def _isolated_worktree(
             timeout=30,
         )
         shutil.rmtree(temporary, ignore_errors=True)
-        subprocess.run(
-            ["git", "worktree", "prune"],
+        prune = subprocess.run(
+            ["git", "worktree", "prune", "--expire", "now"],
             cwd=root,
             env=_managed_git_environment(),
             check=False,
             capture_output=True,
             timeout=30,
         )
+        listed = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=root,
+            env=_managed_git_environment(),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if (
+            prune.returncode != 0
+            or listed.returncode != 0
+            or ("worktree " + str(checkout)) in listed.stdout.splitlines()
+        ):
+            raise AuthorityLayerError("openspec_worktree_cleanup_failed")
 
 
 def _private_directory(path: Path) -> None:
@@ -1004,6 +1056,7 @@ def _command(
     label: str,
     environment: Mapping[str, str] | None = None,
     timeout: float = 30,
+    input_text: str | None = None,
 ) -> str:
     completed = _run_command(
         command,
@@ -1011,6 +1064,7 @@ def _command(
         label=label,
         environment=environment,
         timeout=timeout,
+        input_text=input_text,
     )
     if completed.returncode != 0:
         raise AuthorityLayerError(label.lower() + "_command_failed")
@@ -1023,7 +1077,8 @@ def _run_command(
     cwd: Path,
     label: str,
     environment: Mapping[str, str] | None = None,
-    timeout: int = 30,
+    timeout: float = 30,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = _safe_environment()
     if environment:
@@ -1036,6 +1091,7 @@ def _run_command(
             check=False,
             capture_output=True,
             text=True,
+            input=input_text,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
