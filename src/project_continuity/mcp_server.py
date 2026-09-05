@@ -212,7 +212,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="project-continuity-mcp")
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     parser.add_argument("--token-file", required=True, type=Path)
-    parser.add_argument("--timeout", default=20.0, type=float)
+    # Stay above the front's 60-second archive deadline so the client receives
+    # its truthful in-progress receipt instead of timing out first.
+    parser.add_argument("--timeout", default=90.0, type=float)
     return parser
 
 

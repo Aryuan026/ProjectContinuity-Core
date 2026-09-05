@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import asdict, is_dataclass
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,6 +42,7 @@ DEFAULT_PORT = 8766
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 CASE_SEARCH_TIMEOUT_SECONDS = 15
+ARCHIVE_OPERATION_TIMEOUT_SECONDS = 60
 _TOOLS = frozenset({"list", "search", "get", "update", "promote"})
 
 
@@ -50,6 +52,114 @@ class ServerConfigError(ValueError):
 
 class RequestError(ValueError):
     """One authenticated request does not match the frozen five-tool API."""
+
+
+class ArchiveOperationBusy(RuntimeError):
+    """The sole archive worker still owns the backend after a prior request."""
+
+    def __init__(self, capability: str) -> None:
+        super().__init__("archive backend is still owned by an in-flight operation")
+        self.capability = capability
+
+
+class ArchiveOperationTimeout(TimeoutError):
+    """The request deadline expired while the archive operation continues."""
+
+    def __init__(self, capability: str) -> None:
+        super().__init__("archive operation exceeded its request deadline")
+        self.capability = capability
+
+
+class _ArchiveRunner:
+    """Own one persistent event loop and at most one active archive operation."""
+
+    def __init__(self) -> None:
+        self._state_lock = threading.Lock()
+        self._active: Optional[Future[Any]] = None
+        self._closed = False
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(
+            target=self._serve,
+            name="project-continuity-archive",
+            daemon=True,
+        )
+        try:
+            self.thread.start()
+        except BaseException:
+            self.loop.close()
+            raise
+
+    def _serve(self) -> None:
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    def run(
+        self,
+        operation: Callable[[], Awaitable[Any]],
+        *,
+        timeout: float,
+        capability: str,
+    ) -> Any:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("ProjectContinuity archive loop is closed")
+            if self._active is not None and self._active.done():
+                self._active = None
+            if self._active is not None:
+                raise ArchiveOperationBusy(capability)
+            awaitable = operation()
+            try:
+                future = asyncio.run_coroutine_threadsafe(awaitable, self.loop)
+            except BaseException:
+                close = getattr(awaitable, "close", None)
+                if callable(close):
+                    close()
+                raise
+            self._active = future
+        # A Future may finish before registration, in which case
+        # add_done_callback() invokes synchronously. Register outside the
+        # non-reentrant state lock so an immediate result cannot self-deadlock.
+        future.add_done_callback(self._release)
+
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            if future.done():
+                return future.result()
+            raise ArchiveOperationTimeout(capability) from None
+
+    def _release(self, future: Future[Any]) -> None:
+        with self._state_lock:
+            if self._active is future:
+                self._active = None
+
+    def close(self) -> None:
+        """Stop only after any retained archive worker reaches terminal state."""
+
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            active = self._active
+        if active is not None:
+            try:
+                active.result()
+            except BaseException:
+                pass
+
+        async def shutdown() -> None:
+            await self.loop.shutdown_asyncgens()
+            await self.loop.shutdown_default_executor()
+
+        future = asyncio.run_coroutine_threadsafe(shutdown(), self.loop)
+        try:
+            future.result(timeout=5)
+        finally:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=5)
+            if self.thread.is_alive():
+                raise RuntimeError("ProjectContinuity archive loop did not stop")
+            self.loop.close()
 
 
 def load_private_service_config(path: Path) -> Config:
@@ -179,7 +289,10 @@ class FrontApplication:
     def __init__(self, front: CognitionFront, credentials: CredentialSet) -> None:
         self.front = front
         self.credentials = credentials
-        self._archive_lock = threading.Lock()
+        self._archive_runner = _ArchiveRunner()
+
+    def close(self) -> None:
+        self._archive_runner.close()
 
     def invoke(self, principal_id: str, request: Mapping[str, Any]) -> Any:
         _require_exact_keys(request, {"tool", "project_id", "arguments"}, "request")
@@ -218,7 +331,8 @@ class FrontApplication:
                 mode=arguments.get("mode", "replace"),
             )
         return self._run_archive(
-            lambda: self._promote(principal_id, project_id, arguments)
+            lambda: self._promote(principal_id, project_id, arguments),
+            timeout=ARCHIVE_OPERATION_TIMEOUT_SECONDS,
         )
 
     def _search(
@@ -255,6 +369,7 @@ class FrontApplication:
                     limit=arguments.get("limit", 8),
                 ),
                 timeout=CASE_SEARCH_TIMEOUT_SECONDS,
+                capability="case_search",
             )
         if scope != "stages":
             raise RequestError("search scope must be stages or cases")
@@ -286,22 +401,22 @@ class FrontApplication:
         if stage_id:
             return self.front.get_stage(principal_id, project_id, stage_id)
         return self._run_archive(
-            lambda: self.front.get_case(principal_id, project_id, promotion_id)
+            lambda: self.front.get_case(principal_id, project_id, promotion_id),
+            timeout=ARCHIVE_OPERATION_TIMEOUT_SECONDS,
         )
 
     def _run_archive(
         self,
         operation: Callable[[], Awaitable[Any]],
         *,
-        timeout: Optional[float] = None,
+        timeout: float,
+        capability: str = "case_archive",
     ) -> Any:
-        """Keep persistent direct Cognee adapters on one event loop at a time."""
-
-        with self._archive_lock:
-            awaitable = operation()
-            if timeout is not None:
-                awaitable = asyncio.wait_for(awaitable, timeout=timeout)
-            return asyncio.run(awaitable)
+        return self._archive_runner.run(
+            operation,
+            timeout=timeout,
+            capability=capability,
+        )
 
     async def _promote(
         self, principal_id: str, project_id: str, arguments: Mapping[str, Any]
@@ -362,11 +477,21 @@ def create_server(
     class Handler(_RequestHandler):
         app = application
 
-    return _LoopbackServer((host, port), Handler)
+    try:
+        return _LoopbackServer((host, port), Handler)
+    except Exception:
+        application.close()
+        raise
 
 
 class _LoopbackServer(ThreadingHTTPServer):
     daemon_threads = True
+
+    def server_close(self) -> None:
+        try:
+            self.RequestHandlerClass.app.close()
+        finally:
+            super().server_close()
 
 
 class _RequestHandler(BaseHTTPRequestHandler):
@@ -424,6 +549,28 @@ class _RequestHandler(BaseHTTPRequestHandler):
                     "ok": False,
                     "error": "capability_unavailable",
                     "capability": "case_semantic_search",
+                },
+            )
+            return
+        except ArchiveOperationBusy as exc:
+            self._send(
+                503,
+                {
+                    "ok": False,
+                    "error": "backend_busy",
+                    "capability": exc.capability,
+                    "operation_state": "in_progress",
+                },
+            )
+            return
+        except ArchiveOperationTimeout as exc:
+            self._send(
+                504,
+                {
+                    "ok": False,
+                    "error": "backend_timeout",
+                    "capability": exc.capability,
+                    "operation_state": "in_progress",
                 },
             )
             return
