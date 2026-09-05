@@ -261,6 +261,124 @@ def test_case_get_and_search_reuse_the_existing_get_search_tools(tmp_path: Path)
     assert front.calls[0][3]["match"] == "keyword"
 
 
+def test_terminal_archive_timeouts_keep_the_call_capability_without_in_progress(
+    tmp_path: Path,
+) -> None:
+    class TerminalTimeoutFront(FakeFront):
+        async def search_cases(self, principal_id, project_id, query, **arguments):
+            raise TimeoutError("terminal search timeout")
+
+        async def get_case(self, principal_id, project_id, promotion_id):
+            raise TimeoutError("terminal get timeout")
+
+        async def promote_stage(self, principal_id, project_id, stage_id, **arguments):
+            raise TimeoutError("terminal promotion timeout")
+
+    config = load_config(write_config(tmp_path / "runtime"))
+    credentials = _credentials(config, tmp_path / "credentials")
+    server = create_server(
+        config,
+        credentials,
+        port=0,
+        front=TerminalTimeoutFront(),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    token = TOKENS["promoter-client"]
+    try:
+        search = _invoke(
+            port,
+            token,
+            "search",
+            {"scope": "cases", "query": "回归", "match": "keyword"},
+        )
+        get = _invoke(
+            port,
+            token,
+            "get",
+            {"promotion_id": "promotion:" + "a" * 64},
+        )
+        promote = _invoke(
+            port,
+            token,
+            "promote",
+            {
+                "stage_id": "project.handoff",
+                "source_revision": "a" * 16,
+                "idempotency_key": "terminal-timeout",
+                "provenance": [_ref()],
+                "review_authority": _ref(),
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+    assert search[:2] == (
+        504,
+        {
+            "ok": False,
+            "error": "backend_timeout",
+            "capability": "case_search",
+        },
+    )
+    for response in (get, promote):
+        assert response[:2] == (
+            504,
+            {
+                "ok": False,
+                "error": "backend_timeout",
+                "capability": "case_archive",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "legacy_timeout",
+    [
+        type("LegacyBuiltinTimeout", (Exception,), {}),
+        type("LegacyAsyncioTimeout", (Exception,), {}),
+    ],
+)
+def test_distinct_legacy_timeout_classes_are_terminal_when_future_is_done(
+    monkeypatch,
+    legacy_timeout,
+) -> None:
+    server_module = __import__("project_continuity.server", fromlist=["_ArchiveRunner"])
+    monkeypatch.setattr(
+        server_module,
+        "_ARCHIVE_TIMEOUT_ERRORS",
+        server_module._ARCHIVE_TIMEOUT_ERRORS + (legacy_timeout,),
+    )
+
+    class TerminalTimeoutFuture(Future):
+        def result(self, timeout=None):
+            raise legacy_timeout("terminal backend timeout")
+
+    runner = server_module._ArchiveRunner()
+
+    async def operation():
+        return None
+
+    def precompleted(awaitable, _loop):
+        awaitable.close()
+        future = TerminalTimeoutFuture()
+        future.set_result(None)
+        return future
+
+    original_submit = asyncio.run_coroutine_threadsafe
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", precompleted)
+    try:
+        with pytest.raises(server_module.ArchiveBackendTimeout) as caught:
+            runner.run(operation, timeout=0.01, capability="case_archive")
+        assert caught.value.capability == "case_archive"
+    finally:
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", original_submit)
+        runner.close()
+
+
 def test_archive_requests_reuse_one_event_loop_and_close_it() -> None:
     class LoopBoundFront(FakeFront):
         def __init__(self) -> None:

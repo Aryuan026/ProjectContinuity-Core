@@ -44,6 +44,11 @@ MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 CASE_SEARCH_TIMEOUT_SECONDS = 15
 ARCHIVE_OPERATION_TIMEOUT_SECONDS = 60
 _TOOLS = frozenset({"list", "search", "get", "update", "promote"})
+_ARCHIVE_TIMEOUT_ERRORS = (
+    FutureTimeoutError,
+    TimeoutError,
+    asyncio.TimeoutError,
+)
 
 
 class ServerConfigError(ValueError):
@@ -67,6 +72,14 @@ class ArchiveOperationTimeout(TimeoutError):
 
     def __init__(self, capability: str) -> None:
         super().__init__("archive operation exceeded its request deadline")
+        self.capability = capability
+
+
+class ArchiveBackendTimeout(TimeoutError):
+    """The archive backend reached a terminal timeout for this request."""
+
+    def __init__(self, capability: str) -> None:
+        super().__init__("archive backend returned a terminal timeout")
         self.capability = capability
 
 
@@ -123,9 +136,12 @@ class _ArchiveRunner:
 
         try:
             return future.result(timeout=timeout)
-        except FutureTimeoutError:
+        except _ARCHIVE_TIMEOUT_ERRORS:
             if future.done():
-                return future.result()
+                try:
+                    return future.result()
+                except _ARCHIVE_TIMEOUT_ERRORS as exc:
+                    raise ArchiveBackendTimeout(capability) from exc
             raise ArchiveOperationTimeout(capability) from None
 
     def _release(self, future: Future[Any]) -> None:
@@ -574,13 +590,13 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 },
             )
             return
-        except TimeoutError:
+        except ArchiveBackendTimeout as exc:
             self._send(
                 504,
                 {
                     "ok": False,
                     "error": "backend_timeout",
-                    "capability": "case_search",
+                    "capability": exc.capability,
                 },
             )
             return
