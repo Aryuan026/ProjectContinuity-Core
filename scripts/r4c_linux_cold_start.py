@@ -144,6 +144,7 @@ def _front_environment(root: Path) -> dict[str, str]:
     environment = dict(os.environ)
     for name in (*PROVIDER_ENV, *COGNEE_RUNTIME_ENV):
         environment.pop(name, None)
+    environment.pop("PROJECT_CONTINUITY_CASE_ARCHIVE_MODE", None)
     home = root / "home"
     home.mkdir(mode=0o700, exist_ok=True)
     environment.update(
@@ -151,7 +152,6 @@ def _front_environment(root: Path) -> dict[str, str]:
             "HOME": str(home),
             "XDG_CACHE_HOME": str(root / "xdg-cache"),
             "XDG_CONFIG_HOME": str(root / "xdg-config"),
-            "PROJECT_CONTINUITY_CASE_ARCHIVE_MODE": "keyword",
         }
     )
     return environment

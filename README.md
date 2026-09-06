@@ -71,6 +71,7 @@ separate `promoter` capability. The human operator owns these assignments.
 ## Quick start
 
 The complete, agent-readable procedure is in [INSTALL.md](INSTALL.md). In short:
+the accepted Linux full-host baseline uses Node.js `24.20.0` (Active LTS).
 
 ```bash
 git clone https://github.com/Aryuan026/ProjectContinuity-Core.git

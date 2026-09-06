@@ -9,7 +9,7 @@ does not expose a public port or create a second writable database.
 - Python `>=3.10,<3.15`
 - Git
 - [uv](https://docs.astral.sh/uv/)
-- Node.js `>=20.19.0` for the full self-hosted OpenSpec/TeamAI truth plane
+- Node.js `24.20.0` (Active LTS) for the full self-hosted OpenSpec/TeamAI truth plane
 - enough private storage for Turritopsis and, if enabled, Cognee
 
 The accepted full-front physical baseline is Linux. A macOS or other host may
@@ -23,7 +23,7 @@ it as an accepted release.
 The first-install inventory is deliberately finite:
 
 - one immutable source checkout and its exact `uv.lock`;
-- Python `>=3.10,<3.15`, plus Node.js `>=20.19.0` for the full
+- Python `>=3.10,<3.15`, plus Node.js `24.20.0` (Active LTS) for the full
   OpenSpec/TeamAI truth plane;
 - four separate absolute roots: accepted release, private config/credentials,
   mutable project/archive data, and runtime state/logs;
@@ -59,6 +59,7 @@ Before creating operator state, read back the installed identities from this
 exact checkout:
 
 ```bash
+node --version
 uv run --frozen --no-sync python -c \
   'import project_continuity; print(project_continuity.__version__)'
 uv run --frozen --no-sync graphify --version
@@ -66,9 +67,9 @@ node -p "require('./vendor/openspec-runtime/node_modules/@fission-ai/openspec/pa
 node -p "require('./vendor/teamai-runtime/node_modules/teamai-cli/package.json').version"
 ```
 
-The expected values for version `0.1.3` are respectively `0.1.3`, Graphify
-`0.9.48`, OpenSpec `1.10.0`, and TeamAI CLI `0.20.0`. A mismatch is an install
-failure; do not silently substitute a global executable.
+The expected values are respectively Node.js `v24.20.0`, ProjectContinuity
+`0.1.3`, Graphify `0.9.48`, OpenSpec `1.10.0`, and TeamAI CLI `0.20.0`. A
+mismatch is an install failure; do not silently substitute a global executable.
 
 ### Clean wheel arrival smoke
 
