@@ -1,5 +1,6 @@
 .venv/
 vendor/teamai-runtime/node_modules/
+vendor/openspec-runtime/node_modules/
 .pytest_cache/
 __pycache__/
 *.py[cod]

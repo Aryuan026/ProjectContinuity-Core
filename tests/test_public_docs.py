@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 try:
@@ -26,8 +27,101 @@ def test_first_install_names_every_required_runtime_piece() -> None:
         "positive and negative canary",
         "<data_root>/projects/<project_id>/turritopsis/stages.json",
         "turritopsis add project project.handoff",
+        "Node.js `24.20.0` (Active LTS)",
+        "node --version",
+        "Node.js `v24.20.0`",
+        "--extra graphify-code",
+        "npm ci --ignore-scripts --prefix vendor/openspec-runtime",
+        "npm ci --ignore-scripts --prefix vendor/teamai-runtime",
+        "Graphify `0.9.48`",
+        "OpenSpec `1.10.0`",
+        "TeamAI CLI `0.20.0`",
     ):
         assert required in install
+
+
+def test_provider_free_default_and_semantic_hold_are_agent_neutral() -> None:
+    documents = (
+        ROOT / "README.md",
+        ROOT / "AI_START_HERE.md",
+        ROOT / "OPERATIONS.md",
+        ROOT / "SCHEMA.md",
+        ROOT / "skills/project-continuity/SKILL.md",
+    )
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in documents)
+    assert "provider-free" in combined
+    assert "semantic" in combined
+    assert "capability_unavailable" in combined
+    assert "keyword" in combined
+    assert "PROJECT_CONTINUITY_CASE_ARCHIVE_MODE" in combined
+
+
+def test_distribution_contract_carries_arrival_material_without_runtime_state() -> None:
+    package = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = package["project"]["optional-dependencies"]
+    data_files = package["tool"]["setuptools"]["data-files"]
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    install = (ROOT / "INSTALL.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert extras["graphify-code"] == ["graphifyy==0.9.48"]
+    assert "skills/project-continuity/SKILL.md" in data_files[
+        "share/project-continuity/skills/project-continuity"
+    ]
+    assert "uv.lock" in data_files["share/project-continuity"]
+    assert "vendor/openspec-runtime/package-lock.json" in data_files[
+        "share/project-continuity/vendor/openspec-runtime"
+    ]
+    assert "recursive-include vendor/openspec-runtime *.json" in manifest
+    assert "prune vendor/openspec-runtime/node_modules" in manifest
+    assert "client/library arrival artifact" in install
+    assert "accepted full-front physical baseline is Linux" in install
+    assert "macOS remains a supported MCP client platform" in install
+    assert "--extra graphify-code" in readme
+    assert "Node.js `24.20.0` (Active LTS)" in readme
+    assert "npm ci --ignore-scripts --prefix vendor/openspec-runtime" in readme
+    assert "npm ci --ignore-scripts --prefix vendor/teamai-runtime" in readme
+    assert "scripts/verify_distribution.py" in workflow
+    assert "project-continuity-wheel" in workflow
+    assert "npm ci --ignore-scripts --prefix vendor/openspec-runtime" in workflow
+    assert "npm ci --ignore-scripts --prefix vendor/teamai-runtime" in workflow
+    assert "graphify --version" in workflow
+    assert "r4c-linux-cold-start" in workflow
+    assert "scripts/r4c_linux_cold_start.py" in workflow
+    assert workflow.count('node-version: "24.20.0"') == 2
+    assert workflow.count('= "v24.20.0"') == 2
+    assert 'project-continuity-front" --help' in workflow
+
+    openspec_package = json.loads(
+        (ROOT / "vendor/openspec-runtime/package.json").read_text(encoding="utf-8")
+    )
+    openspec_lock = json.loads(
+        (ROOT / "vendor/openspec-runtime/package-lock.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    teamai_package = json.loads(
+        (ROOT / "vendor/teamai-runtime/package.json").read_text(encoding="utf-8")
+    )
+    teamai_lock = json.loads(
+        (ROOT / "vendor/teamai-runtime/package-lock.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    for package_root in (
+        openspec_package,
+        openspec_lock["packages"][""],
+        teamai_package,
+        teamai_lock["packages"][""],
+    ):
+        assert package_root["engines"] == {"node": "24.20.0"}
+
+
+def test_linux_cold_start_proves_the_unset_keyword_default() -> None:
+    script = (ROOT / "scripts/r4c_linux_cold_start.py").read_text(encoding="utf-8")
+    assert 'environment.pop("PROJECT_CONTINUITY_CASE_ARCHIVE_MODE", None)' in script
+    assert '"PROJECT_CONTINUITY_CASE_ARCHIVE_MODE": "keyword"' not in script
 
 
 def test_maintenance_keeps_upstream_relationships_explicit() -> None:

@@ -17,7 +17,7 @@ TEAMAI_PACKAGE_INTEGRITY = (
     "sha512-aEpaGgWsD/EPqtZrB+4maP7FXqaIy3RXk9w4B3MT7RiF7f88Kvgp7whQFYAr9jvD7m9NoxeGJsn+p2yh66s4EA=="
 )
 TEAMAI_LOCK_DIGEST = (
-    "sha256:a53ed7daf1e8a1aa3eda7ec34452d4f170a1f8157fb9e320d113e60c40f0798e"
+    "sha256:5e2c5af06f7025dbe68f2191427ddfe99213f51ed098ae9399b48dacc49dddf7"
 )
 SIMPLE_GIT_VERSION = "3.36.0"
 JS_YAML_VERSION = "3.15.1"
@@ -301,7 +301,8 @@ def verify_teamai_runtime_lock(runtime_root: Path) -> Dict[str, Any]:
         raise TeamAIContractError("TeamAI consumer dependency is not exact")
     if package.get("overrides") != expected_overrides:
         raise TeamAIContractError("TeamAI consumer security overrides changed")
-    if package.get("engines") != {"node": ">=20"}:
+    expected_engines = {"node": "24.20.0"}
+    if package.get("engines") != expected_engines:
         raise TeamAIContractError("TeamAI consumer Node requirement changed")
     if lock.get("lockfileVersion") != 3:
         raise TeamAIContractError("TeamAI package lock must use lockfileVersion 3")
@@ -310,6 +311,8 @@ def verify_teamai_runtime_lock(runtime_root: Path) -> Dict[str, Any]:
         "teamai-cli": TEAMAI_VERSION
     }:
         raise TeamAIContractError("TeamAI lock root does not match package.json")
+    if root_entry.get("engines") != expected_engines:
+        raise TeamAIContractError("TeamAI lock root Node requirement changed")
     versions = {
         "teamai-cli": _locked_version(packages, "teamai-cli"),
         "simple-git": _locked_version(packages, "simple-git"),

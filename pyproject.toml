@@ -32,6 +32,7 @@ turritopsis-front = [
 cognee-archive = [
   "cognee @ git+https://github.com/topoteretes/cognee.git@a8f9760bb6da90a9956b3be77c0d0534134f533a",
 ]
+graphify-code = ["graphifyy==0.9.48"]
 mcp-client = ["mcp==1.29.1"]
 # Compatibility alias for public 0.1.0-0.1.2 install commands.
 codex-mcp = ["mcp==1.29.1"]
@@ -47,6 +48,38 @@ Issues = "https://github.com/Aryuan026/ProjectContinuity-Core/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/project-continuity" = [
+  "ACKNOWLEDGEMENTS.md",
+  "AGENTS.md",
+  "AI_START_HERE.md",
+  "ARCHITECTURE.md",
+  "CHANGELOG.md",
+  "INSTALL.md",
+  "LICENSE",
+  "NOTICE",
+  "OPERATIONS.md",
+  "README.md",
+  "SCHEMA.md",
+  "SECURITY.md",
+  "THIRD_PARTY_NOTICES.md",
+  "uv.lock",
+]
+"share/project-continuity/config" = ["config/project-continuity.example.toml"]
+"share/project-continuity/skills/project-continuity" = ["skills/project-continuity/SKILL.md"]
+"share/project-continuity/skills/project-continuity/agents" = ["skills/project-continuity/agents/openai.yaml"]
+"share/project-continuity/third_party/licenses" = ["third_party/licenses/*"]
+"share/project-continuity/vendor/openspec-runtime" = [
+  "vendor/openspec-runtime/package.json",
+  "vendor/openspec-runtime/package-lock.json",
+]
+"share/project-continuity/vendor/teamai-runtime" = [
+  "vendor/teamai-runtime/README.md",
+  "vendor/teamai-runtime/package.json",
+  "vendor/teamai-runtime/package-lock.json",
+  "vendor/teamai-runtime/project-continuity-literal-recall.mjs",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

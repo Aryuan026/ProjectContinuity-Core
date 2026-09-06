@@ -5,7 +5,7 @@
   "description": "Isolated, exact TeamAI consumer lock for ProjectContinuity.",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20"
+    "node": "24.20.0"
   },
   "dependencies": {
     "teamai-cli": "0.20.0"

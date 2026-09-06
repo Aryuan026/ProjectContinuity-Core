@@ -15,6 +15,9 @@ from .evidence import sanitize_evidence
 COGNEE_COMMIT = "a8f9760bb6da90a9956b3be77c0d0534134f533a"
 COGNEE_VERSION = "1.5.2"
 CASE_LABEL = "project-continuity-engineering-case"
+CASE_ARCHIVE_MODE_ENV = "PROJECT_CONTINUITY_CASE_ARCHIVE_MODE"
+CASE_ARCHIVE_MODE_KEY = "project_continuity_archive_mode"
+CASE_ARCHIVE_MODES = frozenset({"keyword", "semantic"})
 
 
 class CogneeAdapterError(RuntimeError):
@@ -86,6 +89,54 @@ def cognee_data_id(project_id: str, promotion_id: str) -> str:
     )
 
 
+async def _add_keyword_case(
+    item: Any,
+    dataset: Any,
+    user: Any,
+    *,
+    node_set: List[str],
+    incremental: bool,
+) -> None:
+    """Run Cognee's native add tasks without probing semantic providers."""
+
+    from cognee.modules.migrations.startup import run_migrations_and_block
+    from cognee.modules.pipelines import Task
+    from cognee.modules.pipelines.layers.reset_dataset_pipeline_run_status import (
+        reset_dataset_pipeline_run_status,
+    )
+    from cognee.modules.run_custom_pipeline import run_custom_pipeline
+    from cognee.tasks.ingestion import ingest_data, resolve_data_directories
+
+    await run_migrations_and_block(dataset.id, user)
+    await reset_dataset_pipeline_run_status(
+        dataset.id,
+        user,
+        pipeline_names=["add_pipeline", "cognify_pipeline"],
+    )
+    await run_custom_pipeline(
+        tasks=[
+            Task(resolve_data_directories, include_subdirectories=True),
+            Task(
+                ingest_data,
+                dataset.name,
+                user,
+                node_set,
+                dataset.id,
+                None,
+                0.5,
+            ),
+        ],
+        data=item,
+        dataset=dataset.id,
+        user=user,
+        pipeline_name="add_pipeline",
+        incremental_loading=incremental,
+        data_cache=incremental,
+        run_in_background=False,
+        skip_connection_test=True,
+    )
+
+
 class NativeCogneeBackend:
     """Use Cognee's pinned DataItem id + dataset-scoped get_data seam.
 
@@ -108,6 +159,7 @@ class NativeCogneeBackend:
         _user, dataset = await self._user_and_dataset(project_id, create=False)
         if dataset is None:
             return {
+                "archive_mode": configured_case_archive_mode(),
                 "dataset_name": project_dataset_name(project_id),
                 "partial_cases": 0,
                 "ready_cases": 0,
@@ -128,11 +180,12 @@ class NativeCogneeBackend:
                 "promotion_id"
             ):
                 continue
-            if cognee_row_is_ready(row, dataset.id):
+            if cognee_row_is_ready(row, dataset.id, metadata):
                 ready += 1
             else:
                 partial += 1
         return {
+            "archive_mode": configured_case_archive_mode(),
             "dataset_name": project_dataset_name(project_id),
             "partial_cases": partial,
             "ready_cases": ready,
@@ -170,14 +223,31 @@ class NativeCogneeBackend:
         import cognee
         from cognee.tasks.ingestion.data_item import DataItem
 
-        if existing is None:
-            data_id = _uuid(cognee_data_id(case.project_id, case.promotion_id))
-            item = DataItem(
-                data=case.content,
-                data_id=data_id,
-                label=CASE_LABEL,
-                external_metadata=dict(case.metadata),
+        archive_mode = configured_case_archive_mode()
+        data_id = _uuid(cognee_data_id(case.project_id, case.promotion_id))
+        metadata = dict(case.metadata)
+        metadata[CASE_ARCHIVE_MODE_KEY] = archive_mode
+        item = DataItem(
+            data=case.content,
+            data_id=data_id,
+            label=CASE_LABEL,
+            external_metadata=metadata,
+        )
+        if archive_mode == "keyword":
+            # Cognee's native add tasks are the durable keyword archive.  Its
+            # public add() does not forward the donor's caller-scoped
+            # skip_connection_test seam, so use the public custom-pipeline
+            # runner with the exact native tasks instead of a process-global
+            # provider bypass.  A later semantic call still performs its own
+            # connection checks.
+            await _add_keyword_case(
+                item,
+                dataset,
+                user,
+                node_set=["project:%s" % case.project_id, "engineering-case"],
+                incremental=existing is None,
             )
+        elif existing is None:
             await cognee.remember(
                 item,
                 dataset_id=dataset.id,
@@ -188,6 +258,19 @@ class NativeCogneeBackend:
                 self_improvement=False,
             )
         else:
+            # Mark legacy/partial rows with the explicit semantic contract
+            # before resuming cognify.  Regular add updates metadata without
+            # relying on the prior add-pipeline cache.
+            await cognee.add(
+                item,
+                dataset_id=dataset.id,
+                dataset_name=dataset.name,
+                user=user,
+                node_set=["project:%s" % case.project_id, "engineering-case"],
+                incremental_loading=False,
+                data_cache=False,
+                run_in_background=False,
+            )
             await cognee.cognify(
                 datasets=[dataset.id],
                 user=user,
@@ -254,7 +337,7 @@ class NativeCogneeBackend:
             content=content,
             content_digest=_digest(content),
             metadata=dict(metadata),
-            ready=cognee_row_is_ready(row, dataset_id),
+            ready=cognee_row_is_ready(row, dataset_id, metadata),
         )
 
     async def _user_and_dataset(self, project_id: str, *, create: bool):
@@ -299,16 +382,49 @@ def verify_case_record(
         raise CogneeUnavailable("Cognee Case exists but archive processing is incomplete")
 
 
-def cognee_row_is_ready(row: Any, dataset_id: Any) -> bool:
-    """Use Cognee's cognify completion marker as the single Case-ready predicate."""
+def cognee_row_is_ready(
+    row: Any,
+    dataset_id: Any,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """Accept the donor completion marker for the row's explicit archive mode.
+
+    Rows written before the keyword mode existed have no marker and retain the
+    original cognify-completed contract.  This keeps historical semantic Cases
+    readable without silently reclassifying partial legacy writes as ready.
+    """
 
     raw_status = getattr(row, "pipeline_status", None)
     pipeline_status = raw_status if isinstance(raw_status, dict) else {}
+    raw_metadata = (
+        metadata
+        if isinstance(metadata, Mapping)
+        else getattr(row, "external_metadata", None)
+    )
+    row_metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
+    archive_mode = row_metadata.get(CASE_ARCHIVE_MODE_KEY)
+    if archive_mode == "keyword":
+        add_status = pipeline_status.get("add_pipeline", {})
+        return (
+            isinstance(add_status, dict)
+            and add_status.get(str(dataset_id)) == "DATA_ITEM_PROCESSING_COMPLETED"
+        )
+    if archive_mode not in {None, "semantic"}:
+        return False
     cognify_status = pipeline_status.get("cognify_pipeline", {})
     return (
         isinstance(cognify_status, dict)
         and cognify_status.get(str(dataset_id)) == "DATA_ITEM_PROCESSING_COMPLETED"
     )
+
+
+def configured_case_archive_mode() -> str:
+    """Return the reviewed archive mode; keyword is the provider-free default."""
+
+    value = os.environ.get(CASE_ARCHIVE_MODE_ENV, "keyword")
+    if value not in CASE_ARCHIVE_MODES:
+        raise CogneeAdapterError("Case archive mode must be keyword or semantic")
+    return value
 
 
 def case_keyword_search(

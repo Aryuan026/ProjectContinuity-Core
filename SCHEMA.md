@@ -89,8 +89,14 @@ promotion.
 Stage revisions are exact 16-character lowercase hex identities produced by
 Turritopsis. A Case identity is `promotion:<64 lowercase hex>`. The Case content
 records the source project, Stage, revision, review/provenance references, and
-the frozen engineering narrative. A Case does not become ready until Cognee's
-cognify pipeline reports completion and exact readback succeeds.
+the frozen engineering narrative. New provider-free Cases carry
+`project_continuity_archive_mode=keyword` and become ready only when Cognee's
+add pipeline reports completion and exact readback succeeds. Explicit semantic
+Cases carry `semantic` and require cognify completion. Legacy rows without a
+mode retain the cognify-ready rule, so an old partial add is never silently
+reclassified as ready.
+The front defaults `PROJECT_CONTINUITY_CASE_ARCHIVE_MODE` to `keyword`; only
+the closed values `keyword` and `semantic` are accepted.
 
 ## Receipts
 

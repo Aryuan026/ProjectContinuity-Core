@@ -1,0 +1,13 @@
+{
+  "name": "project-continuity-openspec-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Exact isolated OpenSpec runtime for ProjectContinuity",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": "24.20.0"
+  },
+  "dependencies": {
+    "@fission-ai/openspec": "1.10.0"
+  }
+}

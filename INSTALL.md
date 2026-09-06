@@ -9,8 +9,13 @@ does not expose a public port or create a second writable database.
 - Python `>=3.10,<3.15`
 - Git
 - [uv](https://docs.astral.sh/uv/)
-- Node.js `>=20` only when using the TeamAI integration
+- Node.js `24.20.0` (Active LTS) for the full self-hosted OpenSpec/TeamAI truth plane
 - enough private storage for Turritopsis and, if enabled, Cognee
+
+The accepted full-front physical baseline is Linux. A macOS or other host may
+be used only after its pinned Cognee/Ladybug C API is independently present and
+read back; a successful client-wheel install does not prove that native graph
+runtime. macOS remains a supported MCP client platform.
 
 Clone the public repository and verify the selected tag or commit before using
 it as an accepted release.
@@ -18,15 +23,16 @@ it as an accepted release.
 The first-install inventory is deliberately finite:
 
 - one immutable source checkout and its exact `uv.lock`;
-- Python `>=3.10,<3.15`, plus Node.js `>=20` only for TeamAI;
+- Python `>=3.10,<3.15`, plus Node.js `24.20.0` (Active LTS) for the full
+  OpenSpec/TeamAI truth plane;
 - four separate absolute roots: accepted release, private config/credentials,
   mutable project/archive data, and runtime state/logs;
 - one Turritopsis Store per configured project;
 - one private token for each principal and the minimum project role it needs;
 - one loopback front, one native stdio MCP registration, and one exact Skill
   projection;
-- an LLM and embedding provider only if new Cognee promotions or semantic
-  search are intentionally enabled;
+- an LLM and embedding provider only if semantic Case search or the explicit
+  semantic archive mode is intentionally enabled;
 - a positive and negative canary before declaring the front canonical.
 
 ## 2. Install the exact runtime
@@ -35,12 +41,59 @@ The first-install inventory is deliberately finite:
 uv sync --frozen --no-dev \
   --extra turritopsis-front \
   --extra cognee-archive \
+  --extra graphify-code \
   --extra mcp-client
+
+npm ci --ignore-scripts --prefix vendor/openspec-runtime
+npm ci --ignore-scripts --prefix vendor/teamai-runtime
 ```
 
 Do not install donor packages globally. `uv.lock` is the runtime identity for
-this source release. A source-first checkout does not include `.venv`,
-`node_modules`, provider credentials, or mutable data.
+the Python and Graphify runtime. The two package locks independently bind
+OpenSpec `1.10.0` and TeamAI CLI `0.20.0`; `--ignore-scripts` prevents package
+install hooks from becoming an unreviewed execution path. A source-first
+checkout does not include `.venv`, `node_modules`, provider credentials, or
+mutable data.
+
+Before creating operator state, read back the installed identities from this
+exact checkout:
+
+```bash
+node --version
+uv run --frozen --no-sync python -c \
+  'import project_continuity; print(project_continuity.__version__)'
+uv run --frozen --no-sync graphify --version
+node -p "require('./vendor/openspec-runtime/node_modules/@fission-ai/openspec/package.json').version"
+node -p "require('./vendor/teamai-runtime/node_modules/teamai-cli/package.json').version"
+```
+
+The expected values are respectively Node.js `v24.20.0`, ProjectContinuity
+`0.1.3`, Graphify `0.9.48`, OpenSpec `1.10.0`, and TeamAI CLI `0.20.0`. A
+mismatch is an install failure; do not silently substitute a global executable.
+
+### Clean wheel arrival smoke
+
+The wheel is a client/library arrival artifact, not the canonical full-host
+layout. Verify it in a new environment before publishing it:
+
+```bash
+uv build
+WHEEL_SMOKE_ROOT="$(mktemp -d)"
+uv venv "$WHEEL_SMOKE_ROOT/.venv" --python 3.12
+uv pip install --python "$WHEEL_SMOKE_ROOT/.venv/bin/python" \
+  "project-continuity[mcp-client] @ file:///absolute/release/dist/project_continuity-0.1.3-py3-none-any.whl"
+"$WHEEL_SMOKE_ROOT/.venv/bin/python" -c \
+  'import project_continuity; print(project_continuity.__version__)'
+"$WHEEL_SMOKE_ROOT/.venv/bin/project-continuity-mcp" --help
+test -f "$WHEEL_SMOKE_ROOT/.venv/share/project-continuity/skills/project-continuity/SKILL.md"
+test -f "$WHEEL_SMOKE_ROOT/.venv/share/project-continuity/uv.lock"
+```
+
+The smoke must also inspect the wheel and source archive with
+`scripts/verify_distribution.py`. It proves package identity, console-entry
+metadata, and arrival files. It does not prove the npm runtimes, a configured
+Store, credentials, or a running front. Those belong to the exact-checkout
+cold start above and the acceptance canary below.
 
 ## 3. Create private operator paths
 
@@ -81,6 +134,11 @@ uv run project-continuity-front \
 
 `GET /health` reporting `front_ready` proves only the transport is alive. It
 does not prove every donor, dataset, project, or provider is ready.
+
+Leave `PROJECT_CONTINUITY_CASE_ARCHIVE_MODE` unset for the provider-free
+`keyword` default. A separate reviewed semantic-provider gate may set it to
+`semantic` together with the explicit embedding configuration. Any other value
+is rejected; never turn a keyword hit into an implicit semantic approval.
 
 ## 5. Initialize one project Store
 
@@ -179,6 +237,8 @@ uv sync --frozen --no-dev --extra mcp-client
 This produces `project-continuity-mcp` without installing the donor runtimes,
 initializing local data, or starting `project-continuity-front`. The old
 `codex-mcp` extra remains a deprecated 0.1.x compatibility alias only.
+The clean-wheel command in section 2 is the equivalent client-only install
+when the accepted input is a built wheel instead of a source checkout.
 
 Point the Agent runtime at the accepted release's executable. For Codex:
 
@@ -220,6 +280,13 @@ root. Refuse to overwrite an existing unmanaged path. Confirm `SKILL.md` and
 ## 8. Acceptance canary
 
 Use a small non-sensitive project first.
+
+The public CI repeats the core arrival path on the accepted Linux baseline
+with fresh exact-source dependencies, a fresh wheel MCP client, and the
+packaged Skill. It performs one real provider-free keyword promotion, exact
+search/get, same-key replay across a front restart, and a typed semantic HOLD.
+This isolated synthetic receipt does not replace an operator's project-specific
+ACL, backup, rollback, or authority-write canaries.
 
 Positive path:
 

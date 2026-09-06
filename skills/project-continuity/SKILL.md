@@ -66,6 +66,10 @@ Use `promote` only when all of these already exist:
 - a stable idempotency key.
 
 Promotion is not a richer `update`. It archives reviewed history and never replaces the current handoff. Reuse the same request and idempotency key after an interrupted promotion.
+The default keyword archive path does not need an LLM or embedding provider.
+Semantic search is a separate explicit opt-in; if it returns
+`capability_unavailable`, keep the semantic question on HOLD or use bounded
+keyword/exact evidence. Never reinterpret a keyword hit as semantic approval.
 
 ## Respect authority
 

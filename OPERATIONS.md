@@ -121,10 +121,12 @@ and the restarted front reports the expected layer identities.
 - `forbidden`: inspect principal-to-role mapping; do not bypass ACL by reporting
   an actor in the request.
 - revision conflict: reread and reconcile; never force the old body.
-- `capability_unavailable` for semantic search: use keyword/exact retrieval or
-  configure embeddings through a separate provider gate.
-- promotion left `prepared`: repair the provider/backend and replay the exact
-  request and idempotency key. Do not invent a new promotion.
+- `capability_unavailable` for semantic search: keep the semantic request on
+  HOLD, or use keyword/exact retrieval. Configure embeddings only through a
+  separate explicit provider gate.
+- promotion left `prepared`: repair the reported archive/backend cause and
+  replay the exact request and idempotency key. Default keyword promotion does
+  not require a semantic provider. Do not invent a new promotion.
 - archive backend error: Stage operations should remain available; investigate
   Cognee without moving current cognition into a second store.
 - truth-plane refresh partial: keep the front stopped and replay the same
