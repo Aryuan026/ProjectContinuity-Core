@@ -136,6 +136,57 @@ def test_authenticated_resolver_reads_exact_collaboration_pr_candidate(
     assert exact["head_ref"].startswith("teamai/push/writer-agent/")
 
 
+def test_authenticated_resolver_recovers_collaboration_pr_by_exact_head(
+    tmp_path: Path,
+) -> None:
+    base = "a" * 40
+    head = "b" * 40
+    branch = "teamai/push/writer-agent/20260905-120000"
+    target = {
+        "number": 9,
+        "state": "open",
+        "title": "[teamai] Contribute session knowledge from writer-agent",
+        "body": "Contribute session knowledge: exact handoff",
+        "html_url": "https://github.com/example/alpha/pull/9",
+        "head": {
+            "ref": branch,
+            "sha": head,
+            "repo": {"full_name": "example/alpha"},
+        },
+        "base": {
+            "ref": "main",
+            "sha": base,
+            "repo": {"full_name": "example/alpha"},
+        },
+    }
+    noise = [{"number": value} for value in range(100, 201)]
+    route = (
+        "pulls?state=all&head="
+        "example%3Ateamai%2Fpush%2Fwriter-agent%2F20260905-120000"
+        "&per_page=100"
+    )
+    opener = Opener(
+        {
+            "pulls?state=all&sort=created&direction=desc&per_page=100": noise,
+            route: [target],
+        }
+    )
+    resolver = GitHubAuthorityResolver(
+        _token(tmp_path / "github-token"), opener=opener
+    )
+
+    recovered = resolver.collaboration_pull_requests_for_head(
+        "https://github.com/example/alpha", branch
+    )
+
+    assert recovered[0]["pull_request"] == 9
+    assert recovered[0]["head_ref"] == branch
+    request, _timeout = opener.requests[0]
+    assert len(opener.requests) == 1
+    assert request.full_url.endswith(route)
+    assert "sort=created" not in request.full_url
+
+
 def test_authenticated_resolver_creates_one_exact_collaboration_pr(
     tmp_path: Path,
 ) -> None:

@@ -114,4 +114,7 @@ learning path begins with a 50-character base-36 encoding of the receipt's
 complete SHA-256 request digest. Exact replay returns the same
 `authority:<digest>` operation identity, resumes the first unfinished
 transition, and verifies committed work through the immutable PR head even if
-the source branch has since been deleted.
+the source branch has since been deleted. While the donor process is live, an
+inherited command-lock descriptor keeps the operation exclusively owned across
+front-process death. Once `branch_published` exists, PR reconciliation is scoped
+to the receipt-bound same-repository branch rather than a time-ordered page.

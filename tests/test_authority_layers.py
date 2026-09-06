@@ -2,7 +2,10 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
+import sys
+import threading
 import time
 
 import pytest
@@ -112,6 +115,12 @@ class FakeGitHubResolver:
 
     def collaboration_pull_requests(self, repo_url, *, deadline=None):
         del repo_url, deadline
+        return ()
+
+    def collaboration_pull_requests_for_head(
+        self, repo_url, head_ref, *, deadline=None
+    ):
+        del repo_url, head_ref, deadline
         return ()
 
     def collaboration_pull_request(self, repo_url, pull_request, *, deadline=None):
@@ -1196,7 +1205,7 @@ def test_teamai_prepared_receipt_reconciles_without_invoking_donor_again(
     )
     monkeypatch.setattr(
         layer.github_resolver,
-        "collaboration_pull_requests",
+        "collaboration_pull_requests_for_head",
         lambda *_args, **_kwargs: (candidate,),
     )
     monkeypatch.setattr(
@@ -1328,6 +1337,287 @@ print('You can create a PR manually')
     assert replayed == {**recovered, "changed": False}
     assert marker.read_text(encoding="utf-8") == "called\n"
     assert len(resolver.created_collaboration) == 1
+
+
+def test_teamai_live_donor_keeps_single_ownership_after_parent_death(
+    config, tmp_path: Path, monkeypatch
+) -> None:
+    bare, _initial = _bare_remote(tmp_path, "orphan-team", "seed")
+    remote = bare.as_uri()
+    root = config.paths.data_root / "team/alpha"
+    root.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "clone", str(bare), str(root)],
+        env=GIT_ENV,
+        check=True,
+        capture_output=True,
+    )
+    _git(root, "remote", "set-url", "origin", remote)
+    for relative, content in render_teamai_guard_documents(
+        team_id="alpha-team",
+        repo_url="https://github.com/example/alpha-team",
+        reviewers=("reviewer-agent",),
+    ).items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _git(root, "add", ".teamai")
+    _git(root, "commit", "-m", "configure TeamAI")
+    _git(root, "push", "origin", "main")
+    revision = _git(root, "rev-parse", "HEAD")
+    title = "Survive parent death"
+    body = "# One contribution\n\nThe donor must remain uniquely owned.\n"
+    digest = authority_request_digest(
+        principal_id="writer-client",
+        project_id="alpha",
+        target="collaboration",
+        operation="contribute",
+        parameters={"body": body, "title": title},
+        expected_revision=revision,
+    )
+    TeamAIReceiptStore(config.paths.state_root).prepare(
+        actor="writer-agent",
+        project_id="alpha",
+        request_digest=digest,
+        source_revision=revision,
+    )
+
+    orphan_checkout = tmp_path / "orphan-checkout"
+    subprocess.run(
+        ["git", "clone", "--shared", "--no-checkout", str(root), str(orphan_checkout)],
+        env=GIT_ENV,
+        check=True,
+        capture_output=True,
+    )
+    _git(orphan_checkout, "checkout", "--detach", revision)
+    _git(orphan_checkout, "remote", "set-url", "--push", "origin", remote)
+    ready = tmp_path / "orphan-donor-ready"
+    gate = tmp_path / "release-orphan-donor"
+    donor_calls = tmp_path / "donor-calls"
+    second_donor = tmp_path / "second-donor-called"
+    node = tmp_path / "node-orphan"
+    node.write_text(
+        """#!/usr/bin/env python3
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+root = Path(os.environ["TEST_TEAMAI_ROOT"])
+ready = Path(os.environ["TEST_TEAMAI_READY"])
+gate = Path(os.environ["TEST_TEAMAI_GATE"])
+calls = Path(os.environ["TEST_TEAMAI_CALLS"])
+marker = sys.argv[sys.argv.index("--title") + 1]
+body = Path(sys.argv[sys.argv.index("--file") + 1]).read_bytes()
+ready.write_text("ready\\n", encoding="utf-8")
+deadline = time.monotonic() + 15
+while not gate.exists():
+    if time.monotonic() >= deadline:
+        raise SystemExit(14)
+    time.sleep(0.01)
+branch = "teamai/push/writer-agent/orphaned"
+subprocess.run(["git", "switch", "-c", branch], cwd=root, check=True)
+relative = ".teamai/learnings/%s-2026-09-06-abc123.md" % marker
+path = root / relative
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_bytes(body)
+subprocess.run(["git", "add", relative], cwd=root, check=True)
+subprocess.run(
+    ["git", "commit", "-m", "[teamai] one orphan-safe contribution"],
+    cwd=root,
+    check=True,
+)
+subprocess.run(["git", "push", "origin", branch], cwd=root, check=True)
+calls.write_text(calls.read_text() + "called\\n" if calls.exists() else "called\\n")
+print("Branch %s has been pushed" % branch)
+print("Failed to create PR: GitHub authentication unavailable")
+print("You can create a PR manually")
+""",
+        encoding="utf-8",
+    )
+    node.chmod(0o700)
+    entrypoint = tmp_path / "teamai.js"
+    entrypoint.write_text("// fake\n", encoding="utf-8")
+    runtime = config.paths.data_root / "truth-plane/teamai-runtime/alpha"
+    runtime.mkdir(parents=True)
+    runtime.parent.chmod(0o700)
+    runtime.chmod(0o700)
+    lock_path = runtime / "command.lock"
+    invocation_root = runtime / "orphan-invocation"
+    invocation_root.mkdir(mode=0o700)
+    parent_script = """
+import fcntl
+import os
+from pathlib import Path
+import sys
+from project_continuity.authority_layers import _run_teamai_contribution
+
+lock_path, invocation, node, entrypoint, digest, body, remote = sys.argv[1:8]
+with open(lock_path, "a+b") as lock:
+    os.fchmod(lock.fileno(), 0o600)
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    _run_teamai_contribution(
+        node_executable=Path(node),
+        entrypoint=Path(entrypoint),
+        invocation_root=Path(invocation),
+        environment={
+            "GIT_AUTHOR_EMAIL": "writer-agent@project-continuity.invalid",
+            "GIT_AUTHOR_NAME": "writer-agent",
+            "GIT_COMMITTER_EMAIL": "writer-agent@project-continuity.invalid",
+            "GIT_COMMITTER_NAME": "writer-agent",
+            "TEST_TEAMAI_ROOT": %r,
+            "TEST_TEAMAI_READY": %r,
+            "TEST_TEAMAI_GATE": %r,
+            "TEST_TEAMAI_CALLS": %r,
+        },
+        request_digest=digest,
+        body=body,
+        repo_url=remote,
+        lock_fd=lock.fileno(),
+    )
+""" % (str(orphan_checkout), str(ready), str(gate), str(donor_calls))
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            parent_script,
+            str(lock_path),
+            str(invocation_root),
+            str(node),
+            str(entrypoint),
+            digest,
+            body,
+            "https://github.com/example/alpha-team",
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not ready.exists():
+        stdout, stderr = parent.communicate(timeout=5)
+        pytest.fail("orphan donor did not start: %s %s" % (stdout, stderr))
+    os.kill(parent.pid, signal.SIGKILL)
+    parent.wait(timeout=5)
+    with lock_path.open("a+b") as probe:
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    class LocalResolver(FakeGitHubResolver):
+        def create_collaboration_pull_request(
+            self,
+            repo_url,
+            *,
+            head_ref,
+            base_ref,
+            subject,
+            body,
+            deadline=None,
+        ):
+            del repo_url, deadline
+            head = subprocess.run(
+                ["git", "--git-dir", str(bare), "rev-parse", head_ref],
+                env=GIT_ENV,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "--git-dir", str(bare), "update-ref", "refs/pull/41/head", head],
+                env=GIT_ENV,
+                check=True,
+            )
+            row = {
+                "base_ref": base_ref,
+                "base_revision": revision,
+                "body": body,
+                "head_ref": head_ref,
+                "head_revision": head,
+                "kind": "pull_request_candidate",
+                "pull_request": 41,
+                "state": "open",
+                "subject": subject,
+                "url": "https://github.com/example/alpha-team/pull/41",
+            }
+            self.collaboration = (row,)
+            self.created_collaboration.append(row)
+            return row
+
+    resolver = LocalResolver()
+    blocked_node = tmp_path / "node-must-not-run"
+    blocked_node.write_text(
+        "#!/bin/sh\nprintf called > %s\nexit 99\n" % second_donor,
+        encoding="utf-8",
+    )
+    blocked_node.chmod(0o700)
+    layer = TeamAILayer(
+        config,
+        TeamAIBinding("alpha-team", remote, ("reviewer-agent",)),
+        blocked_node,
+        entrypoint,
+        github_resolver=resolver,
+    )
+    monkeypatch.setattr(
+        "project_continuity.authority_layers.verify_teamai_guard_documents",
+        lambda *_args, **_kwargs: {},
+    )
+    result = {}
+    failure = []
+
+    def replay() -> None:
+        try:
+            result.update(
+                layer.update(
+                    "writer-client",
+                    "alpha",
+                    "contribute",
+                    {"title": title, "body": body},
+                    expected_revision=revision,
+                )
+            )
+        except BaseException as exc:  # surfaced in the assertion thread
+            failure.append(exc)
+
+    recovering = threading.Thread(target=replay)
+    recovering.start()
+    time.sleep(0.2)
+    if not recovering.is_alive():
+        pytest.fail("recovery exited before orphan release: %r" % failure)
+    assert not second_donor.exists()
+    gate.write_text("continue\n", encoding="utf-8")
+    recovering.join(timeout=20)
+
+    assert not recovering.is_alive()
+    assert failure == []
+    assert result["pull_request"] == 41
+    assert donor_calls.read_text(encoding="utf-8") == "called\n"
+    assert not second_donor.exists()
+    assert len(resolver.created_collaboration) == 1
+    branches = subprocess.run(
+        [
+            "git",
+            "--git-dir",
+            str(bare),
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads/teamai/push/writer-agent/",
+        ],
+        env=GIT_ENV,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert branches == ["refs/heads/teamai/push/writer-agent/orphaned"]
+    receipts = list(
+        (config.paths.state_root / "authority/teamai/alpha").glob("*.json")
+    )
+    assert len(receipts) == 1
+    assert json.loads(receipts[0].read_text(encoding="utf-8"))["state"] == "committed"
 
 
 def test_teamai_prepared_receipt_adopts_pushed_branch_before_creating_pr(

@@ -185,6 +185,34 @@ class GitHubAuthorityResolver:
             if _same_repository_candidate(item, expected)
         )
 
+    def collaboration_pull_requests_for_head(
+        self,
+        repo_url: str,
+        head_ref: str,
+        *,
+        deadline: float | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Return same-repository PRs for one receipt-bound branch."""
+
+        if not _safe_ref(head_ref):
+            raise GitHubResolverError("github_pull_request_malformed")
+        repo = self.repository(repo_url)
+        qualified = "%s:%s" % (repo.owner, head_ref)
+        payload = self._get(
+            repo,
+            "pulls?state=all&head=%s&per_page=100"
+            % quote(qualified, safe=""),
+            deadline=deadline,
+        )
+        if not isinstance(payload, list) or len(payload) > MAX_ITEMS:
+            raise GitHubResolverError("github_pull_requests_malformed")
+        expected = "%s/%s" % (repo.owner, repo.name)
+        return tuple(
+            _collaboration_pull_request(item, expected)
+            for item in payload
+            if _same_repository_candidate(item, expected)
+        )
+
     def collaboration_pull_request(
         self,
         repo_url: str,

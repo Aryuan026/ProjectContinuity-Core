@@ -36,7 +36,11 @@ Do not call an installation usable because `/health` responds.
   contribution. The donor title is an internal full-request-digest marker used
   only to bind its learning filename; the controller supplies the human PR
   title. A committed receipt is accepted only after GitHub and Git agree on the
-  single PR head, parent, request marker, content, author, and committer.
+  single PR head, parent, request marker, content, author, and committer. The
+  donor supervisor inherits the existing command lock, so a front crash cannot
+  release a still-running donor for a second attempt; branch-bound PR recovery
+  queries GitHub by the receipt's exact same-repository head rather than by a
+  recent-PR window.
 - Promote only a coherent reviewed revision; reuse the same idempotency key after
   any interrupted attempt.
 

@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Dict, Mapping, Sequence, Tuple
@@ -52,6 +53,7 @@ from .teamai_receipts import (
     authority_request_digest,
     public_teamai_receipt,
 )
+from .teamai_supervisor import TIMEOUT_EXIT as TEAMAI_SUPERVISOR_TIMEOUT_EXIT
 from .truth_bindings import OpenSpecBinding, TeamAIBinding
 
 
@@ -508,7 +510,7 @@ class TeamAILayer:
         normalized_query = _query(query)
         with self._runtime_identity(
             root, identity, deadline=deadline
-        ) as (environment, invocation_root):
+        ) as (environment, invocation_root, _lock_fd):
             recall = _command(
                 [
                     str(self.node_executable),
@@ -632,7 +634,7 @@ class TeamAILayer:
                 identity,
                 project_id=project_id,
                 remote_auth=True,
-            ) as (environment, invocation_root):
+            ) as (environment, invocation_root, lock_fd):
                 try:
                     durable, created = receipts.prepare(
                         actor=identity.actor_id,
@@ -679,6 +681,7 @@ class TeamAILayer:
                             request_digest=request_digest,
                             body=body,
                             repo_url=self.binding.repo_url,
+                            lock_fd=lock_fd,
                         )
                         if published.pull_request is not None:
                             try:
@@ -932,7 +935,7 @@ class TeamAILayer:
                 }
             )
             try:
-                yield environment, invocation_root
+                yield environment, invocation_root, lock.fileno()
             finally:
                 shutil.rmtree(invocation_root, ignore_errors=True)
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
@@ -1319,6 +1322,7 @@ def _run_teamai_contribution(
     request_digest: str,
     body: str,
     repo_url: str,
+    lock_fd: int,
 ):
     contribution = invocation_root / (
         "contribution-" + request_digest.removeprefix("sha256:") + ".md"
@@ -1328,6 +1332,10 @@ def _run_teamai_contribution(
     try:
         completed = _run_command(
             [
+                sys.executable,
+                str(Path(__file__).with_name("teamai_supervisor.py")),
+                str(lock_fd),
+                str(WRITE_TIMEOUT_SECONDS),
                 str(node_executable),
                 str(entrypoint),
                 "contribute",
@@ -1341,10 +1349,13 @@ def _run_teamai_contribution(
             cwd=invocation_root,
             label="TeamAI",
             environment=environment,
-            timeout=WRITE_TIMEOUT_SECONDS,
+            timeout=WRITE_TIMEOUT_SECONDS + 15,
+            pass_fds=(lock_fd,),
         )
     finally:
         contribution.unlink(missing_ok=True)
+    if completed.returncode == TEAMAI_SUPERVISOR_TIMEOUT_EXIT:
+        raise AuthorityLayerUnavailable("teamai_timeout")
     try:
         return classify_teamai_publish(
             completed.returncode,
@@ -1449,7 +1460,13 @@ def _reconcile_teamai_receipt(
     base_branch: str,
 ) -> Mapping[str, Any] | None:
     try:
-        candidates = resolver.collaboration_pull_requests(repo_url)
+        branch = receipt.get("branch")
+        if isinstance(branch, str):
+            candidates = resolver.collaboration_pull_requests_for_head(
+                repo_url, branch
+            )
+        else:
+            candidates = resolver.collaboration_pull_requests(repo_url)
     except GitHubResolverError as exc:
         raise AuthorityLayerUnavailable("github_authority_unavailable") from exc
     matches = []
@@ -2153,6 +2170,7 @@ def _run_command(
     environment: Mapping[str, str] | None = None,
     timeout: float = 30,
     input_text: str | None = None,
+    pass_fds: Sequence[int] = (),
 ) -> subprocess.CompletedProcess[str]:
     env = _safe_environment()
     if environment:
@@ -2167,6 +2185,7 @@ def _run_command(
             text=True,
             input=input_text,
             timeout=timeout,
+            pass_fds=tuple(pass_fds),
         )
     except subprocess.TimeoutExpired as exc:
         raise AuthorityLayerUnavailable(label.lower() + "_timeout") from exc

@@ -87,7 +87,10 @@ fetch cannot chase newer remote main, records branch and PR transitions, creates
 the PR through the existing GitHub authority when the donor can only push, and
 commits only after immutable PR-head and Git readback. The donor-owned learning
 filename carries the complete request digest as a 50-character base-36 marker,
-so recovery cannot adopt another request's same-body branch.
+so recovery cannot adopt another request's same-body branch. A per-invocation
+supervisor inherits the existing TeamAI command lock; if the front process dies,
+the live donor keeps that ownership until it exits, and a restarted front waits
+before reconciling the exact remote branch and PR.
 
 Managed delivery/OpenSpec/TeamAI checkouts and private bindings are installed or
 fast-forwarded only through the stopped-front operator commands `truth-setup`
