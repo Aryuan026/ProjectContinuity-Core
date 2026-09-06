@@ -506,6 +506,73 @@ def test_managed_git_environment_disables_hooks_and_composes_remote_auth(
     assert foreign == b""
 
 
+def test_managed_git_credential_accepts_bounded_multivalue_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    token = "managed_github_token_value_000001"
+    token_dir = tmp_path / "credentials"
+    token_dir.mkdir(mode=0o700)
+    token_file = token_dir / "github.token"
+    token_file.write_text(token + "\n", encoding="ascii")
+    token_file.chmod(0o600)
+    remote = "https://github.com/example/private"
+    monkeypatch.setenv("PROJECT_CONTINUITY_MANAGED_GIT_REMOTE", remote)
+    monkeypatch.setenv(
+        "PROJECT_CONTINUITY_MANAGED_GIT_TOKEN_FILE", str(token_file)
+    )
+    observed = (
+        b"capability[]=authtype\n"
+        b"capability[]=state\n"
+        b"protocol=https\n"
+        b"host=github.com\n"
+        b"path=example/private\n"
+        b'wwwauth[]=Basic realm="GitHub"\n'
+        b"wwwauth[]=Bearer\n\n"
+    )
+
+    response = credential_response("get", observed)
+
+    assert b"username=x-access-token" in response
+    assert token.encode("ascii") in response
+    foreign = observed.replace(b"path=example/private", b"path=example/other")
+    assert credential_response("get", foreign) == b""
+    over_limit = b"capability[]=state\n" * 33 + observed
+    assert credential_response("get", over_limit) == b""
+
+
+@pytest.mark.parametrize("field", ["protocol", "host", "path", "username"])
+def test_managed_git_credential_rejects_duplicate_scalar_fields(
+    field: str, tmp_path: Path, monkeypatch
+) -> None:
+    token_dir = tmp_path / "credentials"
+    token_dir.mkdir(mode=0o700)
+    token_file = token_dir / "github.token"
+    token_file.write_text("managed_github_token_value_000001\n", encoding="ascii")
+    token_file.chmod(0o600)
+    monkeypatch.setenv(
+        "PROJECT_CONTINUITY_MANAGED_GIT_REMOTE",
+        "https://github.com/example/private",
+    )
+    monkeypatch.setenv(
+        "PROJECT_CONTINUITY_MANAGED_GIT_TOKEN_FILE", str(token_file)
+    )
+    values = {
+        "protocol": "https",
+        "host": "github.com",
+        "path": "example/private",
+        "username": "x-access-token",
+    }
+    duplicate = (field + "=" + values[field] + "\n").encode("utf-8")
+    payload = (
+        b"protocol=https\nhost=github.com\npath=example/private\n"
+        + (b"username=x-access-token\n" if field == "username" else b"")
+        + duplicate
+        + b"\n"
+    )
+
+    assert credential_response("get", payload) == b""
+
+
 def test_managed_git_credential_is_scoped_to_the_exact_repository(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -520,7 +587,14 @@ def test_managed_git_credential_is_scoped_to_the_exact_repository(
     approved = subprocess.run(
         ["git", "credential", "fill"],
         env=environment,
-        input=b"url=https://github.com/example/private\n\n",
+        input=(
+            b"capability[]=authtype\n"
+            b"capability[]=state\n"
+            b"protocol=https\n"
+            b"host=github.com\n"
+            b"path=example/private\n"
+            b'wwwauth[]=Basic realm="GitHub"\n\n'
+        ),
         check=False,
         capture_output=True,
     )

@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 
 MAX_INPUT_BYTES = 16_384
+MAX_MULTI_VALUES = 32
+_MULTI_VALUE_FIELDS = frozenset({"capability[]", "wwwauth[]"})
 _TOKEN = re.compile(r"^[A-Za-z0-9_]+$")
 
 
@@ -20,11 +22,20 @@ def credential_response(operation: str, payload: bytes) -> bytes:
     if operation != "get" or len(payload) > MAX_INPUT_BYTES:
         return b""
     fields: dict[str, str] = {}
+    multi_values: dict[str, list[str]] = {
+        key: [] for key in _MULTI_VALUE_FIELDS
+    }
     try:
         for line in payload.decode("utf-8").splitlines():
             if not line or "=" not in line:
                 continue
             key, value = line.split("=", 1)
+            if key in multi_values:
+                values = multi_values[key]
+                if len(values) >= MAX_MULTI_VALUES:
+                    return b""
+                values.append(value)
+                continue
             if key in fields:
                 return b""
             fields[key] = value
