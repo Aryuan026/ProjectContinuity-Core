@@ -94,6 +94,7 @@ class StageService:
         self.body = "接班进入 R4a。"
         self.revision = "1" * 16
         self.write_count = 0
+        self.advance_before_conflict_snapshot = False
 
     def list_stages(self, current: str = ""):
         assert current == ""
@@ -130,7 +131,7 @@ class StageService:
         assert stage_id == "project.handoff"
         return {
             "body": self.body,
-            "id": stage_id,
+            "stage_id": stage_id,
             "revision": self.revision,
         }
 
@@ -146,11 +147,16 @@ class StageService:
         assert mode == "replace"
         assert actor == "writer-agent"
         if expected_revision != self.revision:
+            locked_revision = self.revision
+            if self.advance_before_conflict_snapshot:
+                self.body = "并发 writer 推进到 revision C。"
+                self.revision = "3" * 16
+                self.write_count += 1
             return {
                 "ok": False,
                 "conflict": True,
                 "requested_revision": expected_revision,
-                "current_revision": self.revision,
+                "current_revision": locked_revision,
                 "current_stage": self.get_stage(stage_id),
             }
         before = self.revision
@@ -324,6 +330,7 @@ def test_same_five_tool_update_preserves_stage_cas_and_routes_authority_write(
                 "expected_revision": "1" * 16,
             },
         )
+        stage_service.advance_before_conflict_snapshot = True
         with pytest.raises(ToolError) as stale:
             asyncio.run(
                 mcp.call_tool(
@@ -361,9 +368,9 @@ def test_same_five_tool_update_preserves_stage_cas_and_routes_authority_write(
     }
     assert '"error": "operation_conflict"' in str(stale.value)
     assert '"detail": "stage_revision_conflict"' in str(stale.value)
-    assert stage_service.body == "接班进入 R4b。"
-    assert stage_service.revision == "2" * 16
-    assert stage_service.write_count == 1
+    assert stage_service.body == "并发 writer 推进到 revision C。"
+    assert stage_service.revision == "3" * 16
+    assert stage_service.write_count == 2
     assert decision == {
         "layer": "decisions",
         "result": {

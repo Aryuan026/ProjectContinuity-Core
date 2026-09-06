@@ -356,10 +356,11 @@ def test_bearer_identity_routes_all_five_tools_without_actor_claim(tmp_path: Pat
     assert all("claimed_actor" not in call[3] for call in front.calls)
 
 
-def test_stage_conflict_is_typed_at_http_without_exposing_current_body(
+def test_stage_conflict_with_newer_snapshot_is_typed_without_exposing_body(
     tmp_path: Path,
 ) -> None:
     current_revision = "b" * 16
+    snapshot_revision = "c" * 16
 
     def conflict(
         _principal_id,
@@ -379,7 +380,7 @@ def test_stage_conflict_is_typed_at_http_without_exposing_current_body(
             "current_revision": current_revision,
             "current_stage": {
                 "stage_id": "project.handoff",
-                "revision": current_revision,
+                "revision": snapshot_revision,
                 "body": "current Stage body must not cross the error boundary",
             },
         }
@@ -404,6 +405,147 @@ def test_stage_conflict_is_typed_at_http_without_exposing_current_body(
         "detail": "stage_revision_conflict",
     }
     assert "current Stage body" not in json.dumps(payload)
+
+
+def test_concurrent_stage_progress_keeps_the_stale_request_typed(
+    tmp_path: Path,
+) -> None:
+    class ConcurrentStageFront(FakeFront):
+        def __init__(self) -> None:
+            super().__init__()
+            self.revision = "b" * 16
+            self.body = "revision B"
+            self.stale_saw_conflict = threading.Event()
+            self.concurrent_write_finished = threading.Event()
+            self.write_count = 0
+
+        def update_stage(
+            self,
+            _principal_id,
+            _project_id,
+            stage_id,
+            body,
+            *,
+            expected_revision,
+            mode,
+        ):
+            assert stage_id == "project.handoff"
+            assert mode == "replace"
+            if expected_revision == "a" * 16:
+                locked_revision = self.revision
+                self.stale_saw_conflict.set()
+                assert self.concurrent_write_finished.wait(2)
+                return {
+                    "ok": False,
+                    "conflict": True,
+                    "requested_revision": expected_revision,
+                    "current_revision": locked_revision,
+                    "current_stage": {
+                        "stage_id": stage_id,
+                        "revision": self.revision,
+                        "body": self.body,
+                    },
+                }
+            assert expected_revision == "b" * 16
+            assert self.stale_saw_conflict.is_set()
+            self.revision = "c" * 16
+            self.body = body
+            self.write_count += 1
+            self.concurrent_write_finished.set()
+            return {
+                "ok": True,
+                "changed": True,
+                "stage_id": stage_id,
+                "revision": self.revision,
+            }
+
+    config = load_config(write_config(tmp_path / "runtime"))
+    credentials = _credentials(config, tmp_path / "credentials")
+    front = ConcurrentStageFront()
+    server = create_server(config, credentials, port=0, front=front)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    port = server.server_address[1]
+    stale_response = []
+    stale_errors = []
+
+    def request_stale_update() -> None:
+        try:
+            stale_response.append(
+                _invoke(
+                    port,
+                    TOKENS["writer-client"],
+                    "update",
+                    {
+                        "stage_id": "project.handoff",
+                        "body": "must not land",
+                        "expected_revision": "a" * 16,
+                    },
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - assertion transport
+            stale_errors.append(exc)
+
+    stale_thread = threading.Thread(target=request_stale_update)
+    stale_thread.start()
+    try:
+        assert front.stale_saw_conflict.wait(1)
+        concurrent = _invoke(
+            port,
+            TOKENS["writer-client"],
+            "update",
+            {
+                "stage_id": "project.handoff",
+                "body": "revision C",
+                "expected_revision": "b" * 16,
+            },
+        )
+        stale_thread.join(timeout=2)
+    finally:
+        front.concurrent_write_finished.set()
+        stale_thread.join(timeout=2)
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
+
+    assert stale_errors == []
+    assert concurrent[0] == 200
+    assert concurrent[1]["result"]["revision"] == "c" * 16
+    assert stale_response[0][:2] == (
+        409,
+        {
+            "ok": False,
+            "error": "operation_conflict",
+            "detail": "stage_revision_conflict",
+        },
+    )
+    assert front.body == "revision C"
+    assert front.revision == "c" * 16
+    assert front.write_count == 1
+
+
+def test_unrecognized_stage_failure_cannot_enter_a_success_envelope(
+    tmp_path: Path,
+) -> None:
+    def failed(*_args, **_kwargs):
+        return {"ok": False, "reason": "private Stage failure detail"}
+
+    with _running(tmp_path) as (port, front):
+        front.update_stage = failed
+        status, payload, _headers = _invoke(
+            port,
+            TOKENS["writer-client"],
+            "update",
+            {
+                "stage_id": "project.handoff",
+                "body": "replacement",
+                "expected_revision": "a" * 16,
+            },
+        )
+
+    assert status == 503
+    assert payload == {"ok": False, "error": "backend_unavailable"}
+    assert "private Stage failure" not in json.dumps(payload)
 
 
 def test_authority_conflict_keeps_its_existing_typed_http_contract(

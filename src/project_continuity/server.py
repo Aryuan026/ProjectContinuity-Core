@@ -320,7 +320,12 @@ class CredentialSet:
         return matched
 
 
-def _is_stage_revision_conflict(value: Any) -> bool:
+def _is_stage_revision_conflict(
+    value: Any,
+    *,
+    stage_id: str,
+    expected_revision: str,
+) -> bool:
     if not isinstance(value, Mapping) or set(value) != {
         "ok",
         "conflict",
@@ -333,11 +338,20 @@ def _is_stage_revision_conflict(value: Any) -> bool:
     return (
         value["ok"] is False
         and value["conflict"] is True
-        and isinstance(value["requested_revision"], str)
-        and isinstance(value["current_revision"], str)
+        and _is_stage_revision(value["requested_revision"])
+        and _is_stage_revision(value["current_revision"])
+        and value["requested_revision"] == expected_revision
         and value["requested_revision"] != value["current_revision"]
         and isinstance(current_stage, Mapping)
-        and current_stage.get("revision") == value["current_revision"]
+        and current_stage.get("stage_id") == stage_id
+    )
+
+
+def _is_stage_revision(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 16
+        and all(character in "0123456789abcdef" for character in value)
     )
 
 
@@ -406,8 +420,14 @@ class FrontApplication:
                     expected_revision=arguments["expected_revision"],
                     mode=arguments.get("mode", "replace"),
                 )
-                if _is_stage_revision_conflict(result):
+                if _is_stage_revision_conflict(
+                    result,
+                    stage_id=arguments["stage_id"],
+                    expected_revision=arguments["expected_revision"],
+                ):
                     raise StageRevisionConflict("stage_revision_conflict")
+                if isinstance(result, Mapping) and result.get("ok") is False:
+                    raise TurritopsisAdapterError("stage update failed")
                 return result
             _require_exact_keys(
                 arguments,
