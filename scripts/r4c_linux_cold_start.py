@@ -210,7 +210,7 @@ def _front(command: Path, config: Path, credentials: Path, root: Path, port: int
         error_stream.close()
 
 
-def _success(result) -> dict:
+def _success(result):
     if result.isError:
         detail = " ".join(
             str(getattr(item, "text", "")) for item in result.content
@@ -316,7 +316,7 @@ async def _arrival(
                 raise AssertionError("unconfigured semantic search did not return typed HOLD")
             if not any(
                 item["promotion_id"] == receipt["promotion_id"]
-                for item in found["results"]
+                for item in found
             ):
                 raise AssertionError("keyword search did not find the promoted Case")
             if case["promotion_id"] != receipt["promotion_id"] or not case["ready"]:
