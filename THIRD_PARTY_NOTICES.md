@@ -70,7 +70,9 @@ future maintainers can update without erasing technical lineage.
 - Upstream copyright: Copyright (c) 2024 OpenSpec Contributors
 - License: MIT
 - Relationship: formal decision authority. ProjectContinuity validates and
-  stores stable references; OpenSpec is not a Python or npm runtime dependency.
+  stores stable references. Self-hosting installations use the isolated exact
+  npm consumer lock in `vendor/openspec-runtime`; OpenSpec is not copied into
+  this repository or imported as a Python dependency.
 - Copied source: none.
 - Local notice copy: `third_party/licenses/OPENSPEC-LICENSE`
 
@@ -83,8 +85,9 @@ future maintainers can update without erasing technical lineage.
 - License: Apache License 2.0; upstream NOTICE also records earlier MIT-licensed
   contributions.
 - Relationship: code-reality authority. The optional router invokes an
-  independently installed exact executable and validates immutable artifacts;
-  Graphify is not installed by this package.
+  exact executable from the `graphify-code` Python extra and validates
+  immutable artifacts. The upstream source tree is not copied into this
+  repository.
 - Copied source: none.
 - Local notice copies: `third_party/licenses/GRAPHIFY-LICENSE`,
   `third_party/licenses/GRAPHIFY-NOTICE`, and

@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from hashlib import sha256
+import importlib
 import json
 from pathlib import Path
 import sys
 import threading
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Dict, List, Optional
 
 import pytest
@@ -321,6 +322,170 @@ def test_semantic_case_search_requires_explicit_embedding_configuration(
     assert cognee_adapter._require_semantic_search_configuration() is None
 
 
+def test_case_ready_predicate_keeps_keyword_and_legacy_semantic_contracts_separate(
+) -> None:
+    dataset_id = "dataset-one"
+    completed = "DATA_ITEM_PROCESSING_COMPLETED"
+    keyword = SimpleNamespace(
+        pipeline_status={"add_pipeline": {dataset_id: completed}},
+        external_metadata={
+            cognee_adapter.CASE_ARCHIVE_MODE_KEY: "keyword",
+        },
+    )
+    semantic = SimpleNamespace(
+        pipeline_status={"cognify_pipeline": {dataset_id: completed}},
+        external_metadata={
+            cognee_adapter.CASE_ARCHIVE_MODE_KEY: "semantic",
+        },
+    )
+    legacy = SimpleNamespace(
+        pipeline_status={"cognify_pipeline": {dataset_id: completed}},
+        external_metadata={},
+    )
+    partial = SimpleNamespace(
+        pipeline_status={"add_pipeline": {dataset_id: completed}},
+        external_metadata={},
+    )
+
+    assert cognee_adapter.cognee_row_is_ready(keyword, dataset_id) is True
+    assert cognee_adapter.cognee_row_is_ready(semantic, dataset_id) is True
+    assert cognee_adapter.cognee_row_is_ready(legacy, dataset_id) is True
+    assert cognee_adapter.cognee_row_is_ready(partial, dataset_id) is False
+
+
+@pytest.mark.parametrize(
+    ("resume_partial", "expected_incremental"),
+    ((False, True), (True, False)),
+)
+def test_native_keyword_archive_uses_cognee_pipeline_without_llm_or_embedding(
+    monkeypatch, resume_partial, expected_incremental
+) -> None:
+    import cognee
+
+    monkeypatch.setenv(cognee_adapter.CASE_ARCHIVE_MODE_ENV, "keyword")
+    monkeypatch.setattr(cognee_adapter, "_assert_native_runtime", lambda: None)
+    backend = cognee_adapter.NativeCogneeBackend()
+    dataset = SimpleNamespace(id="dataset-one", name="project-continuity-alpha")
+    user = SimpleNamespace(id="user-one")
+    case = CogneeCase(
+        project_id="alpha",
+        promotion_id="promotion:" + "a" * 64,
+        envelope_digest="sha256:" + "b" * 64,
+        source_digest="sha256:" + "c" * 64,
+        content="# Case\n\nProvider-free archive.",
+        content_digest="sha256:" + "d" * 64,
+        metadata={"promotion_id": "promotion:" + "a" * 64},
+    )
+    existing = (
+        CogneeCaseRecord(
+            project_id=case.project_id,
+            promotion_id=case.promotion_id,
+            data_id=cognee_data_id(case.project_id, case.promotion_id),
+            envelope_digest=case.envelope_digest,
+            source_digest=case.source_digest,
+            content=case.content,
+            content_digest=case.content_digest,
+            metadata=dict(case.metadata),
+            ready=False,
+        )
+        if resume_partial
+        else None
+    )
+    stored = {
+        "record": existing,
+        "item": None,
+        "migration": None,
+        "reset": None,
+    }
+
+    async def fake_lookup(_project_id, _promotion_id):
+        return stored["record"]
+
+    async def fake_user_and_dataset(_project_id, *, create):
+        assert create is True
+        return user, dataset
+
+    async def fake_migration(dataset_id, migration_user):
+        stored["migration"] = (dataset_id, migration_user)
+
+    async def fake_reset(dataset_id, reset_user, *, pipeline_names):
+        stored["reset"] = (dataset_id, reset_user, pipeline_names)
+
+    async def fake_run_custom_pipeline(**arguments):
+        assert arguments["dataset"] == dataset.id
+        assert arguments["user"] is user
+        assert arguments["pipeline_name"] == "add_pipeline"
+        assert arguments["run_in_background"] is False
+        assert arguments["incremental_loading"] is expected_incremental
+        assert arguments["data_cache"] is expected_incremental
+        assert arguments["skip_connection_test"] is True
+        resolve_task, ingest_task = arguments["tasks"]
+        assert resolve_task.executable.__name__ == "resolve_data_directories"
+        assert resolve_task.default_params == {
+            "args": (),
+            "kwargs": {"include_subdirectories": True},
+        }
+        assert ingest_task.executable.__name__ == "ingest_data"
+        assert ingest_task.default_params["args"] == (
+            dataset.name,
+            user,
+            ["project:alpha", "engineering-case"],
+            dataset.id,
+            None,
+            0.5,
+        )
+        item = arguments["data"]
+        stored["item"] = item
+        stored["record"] = CogneeCaseRecord(
+            project_id="alpha",
+            promotion_id=case.promotion_id,
+            data_id=cognee_data_id("alpha", case.promotion_id),
+            envelope_digest=case.envelope_digest,
+            source_digest=case.source_digest,
+            content=case.content,
+            content_digest=case.content_digest,
+            metadata=dict(item.external_metadata),
+            ready=True,
+        )
+
+    async def forbidden(*_arguments, **_keywords):
+        raise AssertionError("keyword archive must not call add/remember/cognify")
+
+    migration_module = importlib.import_module("cognee.modules.migrations.startup")
+    reset_module = importlib.import_module(
+        "cognee.modules.pipelines.layers.reset_dataset_pipeline_run_status"
+    )
+    custom_pipeline_module = importlib.import_module(
+        "cognee.modules.run_custom_pipeline"
+    )
+
+    monkeypatch.setattr(backend, "_lookup_record", fake_lookup)
+    monkeypatch.setattr(backend, "_user_and_dataset", fake_user_and_dataset)
+    monkeypatch.setattr(migration_module, "run_migrations_and_block", fake_migration)
+    monkeypatch.setattr(
+        reset_module, "reset_dataset_pipeline_run_status", fake_reset
+    )
+    monkeypatch.setattr(
+        custom_pipeline_module, "run_custom_pipeline", fake_run_custom_pipeline
+    )
+    monkeypatch.setattr(cognee, "add", forbidden)
+    monkeypatch.setattr(cognee, "remember", forbidden)
+    monkeypatch.setattr(cognee, "cognify", forbidden)
+
+    result = asyncio.run(backend.upsert(case))
+
+    assert result.ready is True
+    assert stored["migration"] == (dataset.id, user)
+    assert stored["reset"] == (
+        dataset.id,
+        user,
+        ["add_pipeline", "cognify_pipeline"],
+    )
+    assert stored["item"].external_metadata[
+        cognee_adapter.CASE_ARCHIVE_MODE_KEY
+    ] == "keyword"
+
+
 def test_native_data_identity_is_stable_and_project_scoped() -> None:
     promotion_id = "promotion:" + "a" * 64
     assert cognee_data_id("alpha", promotion_id) == cognee_data_id(
@@ -350,6 +515,7 @@ def test_native_adapter_refuses_remote_mode_without_stable_data_id(
 
 
 def test_native_archive_status_counts_only_project_case_rows(monkeypatch) -> None:
+    monkeypatch.setenv(cognee_adapter.CASE_ARCHIVE_MODE_ENV, "keyword")
     dataset_id = "dataset-one"
     dataset = type("Dataset", (), {"id": dataset_id})()
     rows = [
@@ -361,9 +527,10 @@ def test_native_archive_status_counts_only_project_case_rows(monkeypatch) -> Non
                 "external_metadata": {
                     "project_id": "alpha",
                     "promotion_id": "promotion:ready",
+                    cognee_adapter.CASE_ARCHIVE_MODE_KEY: "keyword",
                 },
                 "pipeline_status": {
-                    "cognify_pipeline": {
+                    "add_pipeline": {
                         dataset_id: "DATA_ITEM_PROCESSING_COMPLETED"
                     }
                 },
@@ -428,10 +595,19 @@ def test_native_archive_status_counts_only_project_case_rows(monkeypatch) -> Non
     monkeypatch.setattr(backend, "_user_and_dataset", user_and_dataset)
 
     assert asyncio.run(backend.status("alpha")) == {
+        "archive_mode": "keyword",
         "dataset_name": "project-continuity-alpha",
         "partial_cases": 1,
         "ready_cases": 1,
     }
+
+
+def test_case_archive_mode_rejects_unreviewed_values(monkeypatch) -> None:
+    monkeypatch.delenv(cognee_adapter.CASE_ARCHIVE_MODE_ENV, raising=False)
+    assert cognee_adapter.configured_case_archive_mode() == "keyword"
+    monkeypatch.setenv(cognee_adapter.CASE_ARCHIVE_MODE_ENV, "hybrid")
+    with pytest.raises(cognee_adapter.CogneeAdapterError, match="keyword or semantic"):
+        cognee_adapter.configured_case_archive_mode()
 
 
 def test_envelope_is_canonical_across_provenance_order(f4) -> None:

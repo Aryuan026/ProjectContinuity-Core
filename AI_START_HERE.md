@@ -85,6 +85,9 @@ Promotion requires one coherent exact Stage revision, complete stable-ref
 provenance, an explicit review-authority reference, and a stable idempotency
 key. Retry an interrupted promotion with the same request and key. Promotion
 archives reviewed history and never replaces or rewrites the current Stage.
+The default keyword archive is provider-free. Semantic search remains an
+explicit opt-in; `capability_unavailable` means HOLD or continue with
+keyword/exact retrieval, never invent semantic evidence.
 
 ## Installation and repair
 

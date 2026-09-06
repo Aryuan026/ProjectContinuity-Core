@@ -75,7 +75,10 @@ The complete, agent-readable procedure is in [INSTALL.md](INSTALL.md). In short:
 ```bash
 git clone https://github.com/Aryuan026/ProjectContinuity-Core.git
 cd ProjectContinuity-Core
-uv sync --frozen --extra turritopsis-front --extra cognee-archive --extra mcp-client
+uv sync --frozen --extra turritopsis-front --extra cognee-archive \
+  --extra graphify-code --extra mcp-client
+npm ci --ignore-scripts --prefix vendor/openspec-runtime
+npm ci --ignore-scripts --prefix vendor/teamai-runtime
 cp config/project-continuity.example.toml /absolute/private/path/config.toml
 uv run project-continuity --config /absolute/private/path/config.toml validate
 ```
@@ -142,10 +145,15 @@ reviewed Stage revision with provenance and a review authority, then writes a
 deterministic Case identity through a recoverable `prepared -> committed`
 lifecycle.
 
-Creating a new Cognee Case requires a configured LLM and embedding provider.
-This requirement does **not** affect normal Stage reads/writes, keyword Case
-search, or exact Case reads. If the provider is unavailable, the promotion
-remains recoverable and normal project work continues.
+The default `keyword` archive mode creates a reviewed Case through Cognee's
+native add pipeline without an LLM or embedding provider. The Case records its
+archive mode and becomes ready only after the matching donor pipeline reports
+completion. Existing semantic Cases keep their original cognify-ready rule.
+
+Semantic Case search and the explicit `semantic` archive mode remain opt-in.
+An unconfigured semantic search returns typed `capability_unavailable`; it does
+not guess, silently fall back, or treat a keyword hit as semantic approval.
+Normal Stage work and provider-free promotion continue independently.
 
 ## Upstream relationships
 
@@ -171,7 +179,7 @@ is an infrastructure dependency, not a project-memory authority.
 | Upstream | Relationship | Code included here |
 | --- | --- | --- |
 | [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Formal design decisions remain in OpenSpec. ProjectContinuity stores validated stable references to those decisions; it does not copy the decision ledger. | 0 upstream source files copied. |
-| [Graphify](https://github.com/safishamsi/graphify) | Exact-commit code reality remains in a clean Graphify artifact. ProjectContinuity validates and queries that artifact while hiding managed filesystem paths and rejecting learning sidecars. | 0 upstream source files copied; the integration invokes an independently installed exact Graphify executable. |
+| [Graphify](https://github.com/safishamsi/graphify) | Exact-commit code reality remains in a clean Graphify artifact. ProjectContinuity validates and queries that artifact while hiding managed filesystem paths and rejecting learning sidecars. | 0 upstream source files copied; the exact executable is installed by the optional `graphify-code` extra. |
 
 Exact versions, reviewed commits, licenses, notices, and the boundary between
 runtime use, adapter code, and architectural reference are recorded in
@@ -195,9 +203,17 @@ role/CAS boundary, current Stage flow, keyword/exact Case retrieval, recoverable
 promotion lifecycle, authority-routed read/write plane, managed truth setup and
 refresh, and offline Case relocation are covered by the repository test suite.
 Prebuilt `.venv`, `node_modules`, databases, credentials, and machine-specific
-service installers are intentionally not distributed. The canonical
-installation path is an exact Git checkout because the release-owned Skill and
-operations manuals intentionally remain visible beside the code.
+service installers are intentionally not distributed.
+
+An exact Git checkout plus `uv.lock` and the two npm lock directories is the
+canonical Linux self-hosting input. A different host OS must separately prove
+its pinned Cognee/Ladybug native runtime. The wheel is also a real
+client/library arrival artifact: it installs the Python runtime and three
+console entry points, and places the same Skill, manuals, lock files, config
+example, and third-party
+licenses under `share/project-continuity`. Installing a wheel does not run npm,
+create a Store, mint credentials, or start a front. See `INSTALL.md` for the
+separate clean-wheel smoke and full cold-start procedure.
 
 ## License and credits
 

@@ -5,6 +5,16 @@ mutable project memory, and raw construction logs do not belong in this file.
 
 ## Unreleased
 
+- Make provider-free `keyword` the default Case promotion mode using Cognee's
+  native add tasks; retain cognify readiness for semantic and legacy Cases.
+- Add the exact Graphify Python extra and isolated OpenSpec npm lock, and ship
+  the client-neutral Skill, manuals, locks, config example, and third-party
+  licenses in the wheel arrival payload.
+- Document one clean self-hosting path for MCP-capable Agents while keeping
+  semantic retrieval explicit and typed when unavailable.
+- Add an isolated Linux cold-start canary that uses the packaged Skill and a
+  fresh wheel MCP client to exercise the real provider-free keyword archive,
+  exact Case readback, same-key restart recovery, and typed semantic HOLD.
 - Keep a live TeamAI donor uniquely owned across front-process death by passing
   the existing command lock through a bounded per-invocation supervisor. Resume
   branch-published work through an exact GitHub head query instead of a recent

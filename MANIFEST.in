@@ -2,8 +2,12 @@ include LICENSE NOTICE
 include ACKNOWLEDGEMENTS.md AGENTS.md AI_START_HERE.md ARCHITECTURE.md
 include CHANGELOG.md INSTALL.md OPERATIONS.md README.md SCHEMA.md SECURITY.md
 include THIRD_PARTY_NOTICES.md uv.lock
+include scripts/verify_distribution.py
+include scripts/r4c_linux_cold_start.py
 recursive-include config *.toml
 recursive-include skills *.md *.yaml
 recursive-include third_party/licenses *
 recursive-include vendor/teamai-runtime *.json *.md *.mjs
 prune vendor/teamai-runtime/node_modules
+recursive-include vendor/openspec-runtime *.json
+prune vendor/openspec-runtime/node_modules
