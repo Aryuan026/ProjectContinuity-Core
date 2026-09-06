@@ -229,6 +229,16 @@ def test_two_authenticated_clients_share_cas_and_derived_actor(front, config) ->
         expected_revision=first["revision"],
     )
     assert write["actor"] == "promoter-agent"
+    data_path = project_store_path(config.paths.data_root, "alpha")
+    changelog = data_path.parent / "changelog.jsonl"
+    changelog_before_stale = changelog.read_bytes()
+    backups_before_stale = {
+        path.name: path.read_bytes()
+        for path in (data_path.parent / "backups").glob("stages-*.json")
+    }
+    stage_before_stale = front.get_stage(
+        "writer-client", "alpha", "project.handoff"
+    )
 
     stale = front.update_stage(
         "writer-client",
@@ -239,8 +249,15 @@ def test_two_authenticated_clients_share_cas_and_derived_actor(front, config) ->
     )
     assert stale["conflict"] is True
     assert "Second client wrote this" in stale["current_stage"]["body"]
+    assert front.get_stage("writer-client", "alpha", "project.handoff") == (
+        stage_before_stale
+    )
+    assert changelog.read_bytes() == changelog_before_stale
+    assert {
+        path.name: path.read_bytes()
+        for path in (data_path.parent / "backups").glob("stages-*.json")
+    } == backups_before_stale
 
-    data_path = project_store_path(config.paths.data_root, "alpha")
     records = [
         json.loads(line)
         for line in (data_path.parent / "changelog.jsonl")

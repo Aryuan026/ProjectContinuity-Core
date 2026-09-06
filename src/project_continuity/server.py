@@ -63,6 +63,10 @@ class RequestError(ValueError):
     """One authenticated request does not match the frozen five-tool API."""
 
 
+class StageRevisionConflict(RuntimeError):
+    """A donor-native Stage CAS refusal reached the five-tool boundary."""
+
+
 class ArchiveOperationBusy(RuntimeError):
     """The sole archive worker still owns the backend after a prior request."""
 
@@ -316,6 +320,27 @@ class CredentialSet:
         return matched
 
 
+def _is_stage_revision_conflict(value: Any) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "ok",
+        "conflict",
+        "requested_revision",
+        "current_revision",
+        "current_stage",
+    }:
+        return False
+    current_stage = value["current_stage"]
+    return (
+        value["ok"] is False
+        and value["conflict"] is True
+        and isinstance(value["requested_revision"], str)
+        and isinstance(value["current_revision"], str)
+        and value["requested_revision"] != value["current_revision"]
+        and isinstance(current_stage, Mapping)
+        and current_stage.get("revision") == value["current_revision"]
+    )
+
+
 class FrontApplication:
     """Validate transport input, then delegate to the existing front."""
 
@@ -373,7 +398,7 @@ class FrontApplication:
                     "Stage update arguments",
                     optional={"mode", "target"},
                 )
-                return self.front.update_stage(
+                result = self.front.update_stage(
                     principal_id,
                     project_id,
                     arguments["stage_id"],
@@ -381,6 +406,9 @@ class FrontApplication:
                     expected_revision=arguments["expected_revision"],
                     mode=arguments.get("mode", "replace"),
                 )
+                if _is_stage_revision_conflict(result):
+                    raise StageRevisionConflict("stage_revision_conflict")
+                return result
             _require_exact_keys(
                 arguments,
                 {"target", "operation", "parameters", "expected_revision"},
@@ -652,6 +680,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
         except (PromotionValidationError, KeyError, ValueError, TypeError) as exc:
             self._send(422, {"ok": False, "error": "invalid_operation", "detail": str(exc)})
+            return
+        except StageRevisionConflict as exc:
+            self._send(409, {"ok": False, "error": "operation_conflict", "detail": str(exc)})
             return
         except (ReceiptError, PromotionError) as exc:
             self._send(409, {"ok": False, "error": "operation_conflict", "detail": str(exc)})

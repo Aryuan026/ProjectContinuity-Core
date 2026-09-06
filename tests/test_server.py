@@ -27,6 +27,7 @@ from project_continuity.server import (
 from project_continuity.runtime_environment import cognee_environment_for_config
 from project_continuity.runtime_lock import RuntimeLockError, runtime_lifetime_lock
 from project_continuity.turritopsis_adapter import TurritopsisUnavailable
+from project_continuity.truth_plane import TruthPlaneError
 
 from conftest import write_config
 
@@ -353,6 +354,84 @@ def test_bearer_identity_routes_all_five_tools_without_actor_claim(tmp_path: Pat
     ]
     assert {call[1] for call in front.calls} == {"promoter-client"}
     assert all("claimed_actor" not in call[3] for call in front.calls)
+
+
+def test_stage_conflict_is_typed_at_http_without_exposing_current_body(
+    tmp_path: Path,
+) -> None:
+    current_revision = "b" * 16
+
+    def conflict(
+        _principal_id,
+        _project_id,
+        _stage_id,
+        _body,
+        *,
+        expected_revision,
+        mode,
+    ):
+        assert expected_revision == "a" * 16
+        assert mode == "replace"
+        return {
+            "ok": False,
+            "conflict": True,
+            "requested_revision": expected_revision,
+            "current_revision": current_revision,
+            "current_stage": {
+                "stage_id": "project.handoff",
+                "revision": current_revision,
+                "body": "current Stage body must not cross the error boundary",
+            },
+        }
+
+    with _running(tmp_path) as (port, front):
+        front.update_stage = conflict
+        status, payload, _headers = _invoke(
+            port,
+            TOKENS["writer-client"],
+            "update",
+            {
+                "stage_id": "project.handoff",
+                "body": "stale replacement",
+                "expected_revision": "a" * 16,
+            },
+        )
+
+    assert status == 409
+    assert payload == {
+        "ok": False,
+        "error": "operation_conflict",
+        "detail": "stage_revision_conflict",
+    }
+    assert "current Stage body" not in json.dumps(payload)
+
+
+def test_authority_conflict_keeps_its_existing_typed_http_contract(
+    tmp_path: Path,
+) -> None:
+    def conflict(*_args, **_kwargs):
+        raise TruthPlaneError("graph_expected_revision_conflict")
+
+    with _running(tmp_path) as (port, front):
+        front.update_authority = conflict
+        status, payload, _headers = _invoke(
+            port,
+            TOKENS["writer-client"],
+            "update",
+            {
+                "target": "code",
+                "operation": "register_committed",
+                "parameters": {"commit_sha": "a" * 40},
+                "expected_revision": "absent",
+            },
+        )
+
+    assert status == 409
+    assert payload == {
+        "ok": False,
+        "error": "operation_conflict",
+        "detail": "graph_expected_revision_conflict",
+    }
 
 
 def test_default_search_and_exact_get_route_the_integrated_read_plane(

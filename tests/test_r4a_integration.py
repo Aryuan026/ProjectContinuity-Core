@@ -5,6 +5,9 @@ from hashlib import sha256
 from pathlib import Path
 import threading
 
+import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+
 from project_continuity.client import FrontClient
 from project_continuity.cognee_adapter import CogneeCaseRecord
 from project_continuity.config import load_config
@@ -90,6 +93,7 @@ class StageService:
     def __init__(self) -> None:
         self.body = "接班进入 R4a。"
         self.revision = "1" * 16
+        self.write_count = 0
 
     def list_stages(self, current: str = ""):
         assert current == ""
@@ -140,11 +144,19 @@ class StageService:
     ):
         assert stage_id == "project.handoff"
         assert mode == "replace"
-        assert expected_revision == self.revision
         assert actor == "writer-agent"
+        if expected_revision != self.revision:
+            return {
+                "ok": False,
+                "conflict": True,
+                "requested_revision": expected_revision,
+                "current_revision": self.revision,
+                "current_stage": self.get_stage(stage_id),
+            }
         before = self.revision
         self.body = body
         self.revision = "2" * 16
+        self.write_count += 1
         return {
             "actor": actor,
             "before_revision": before,
@@ -312,6 +324,18 @@ def test_same_five_tool_update_preserves_stage_cas_and_routes_authority_write(
                 "expected_revision": "1" * 16,
             },
         )
+        with pytest.raises(ToolError) as stale:
+            asyncio.run(
+                mcp.call_tool(
+                    "update",
+                    {
+                        "project_id": "alpha",
+                        "stage_id": "project.handoff",
+                        "body": "stale replacement",
+                        "expected_revision": "1" * 16,
+                    },
+                )
+            )
         decision = _mcp_result(
             mcp,
             "update",
@@ -335,6 +359,11 @@ def test_same_five_tool_update_preserves_stage_cas_and_routes_authority_write(
         "id": "project.handoff",
         "revision": "2" * 16,
     }
+    assert '"error": "operation_conflict"' in str(stale.value)
+    assert '"detail": "stage_revision_conflict"' in str(stale.value)
+    assert stage_service.body == "接班进入 R4b。"
+    assert stage_service.revision == "2" * 16
+    assert stage_service.write_count == 1
     assert decision == {
         "layer": "decisions",
         "result": {
