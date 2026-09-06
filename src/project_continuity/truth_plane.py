@@ -9,6 +9,7 @@ import shutil
 import sys
 from typing import Any, Dict, Mapping, Optional, Protocol, Sequence
 
+from .auth import authenticate
 from .config import Config
 from .authority_layers import (
     AuthorityLayerError,
@@ -23,6 +24,7 @@ from .graph_router import (
     GraphQueryRouter,
     GraphRouterError,
 )
+from .graph_controller import GraphControllerError, GraphSnapshotController
 from .github_resolver import GitHubAuthorityResolver, GitHubResolverUnavailable
 from .truth_bindings import load_truth_bindings
 
@@ -57,6 +59,16 @@ class LayerAdapter(Protocol):
 
     def get(
         self, principal_id: str, project_id: str, reference: StableRef
+    ) -> Mapping[str, Any]: ...
+
+    def update(
+        self,
+        principal_id: str,
+        project_id: str,
+        operation: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_revision: str,
     ) -> Mapping[str, Any]: ...
 
 
@@ -188,6 +200,39 @@ class IntegratedTruthPlane:
             "result": result,
         }
 
+    def update(
+        self,
+        principal_id: str,
+        project_id: str,
+        layer: str,
+        operation: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_revision: str,
+    ) -> Dict[str, Any]:
+        """Route one explicit write to the registered authority owner."""
+
+        if layer not in EXTERNAL_LAYERS:
+            raise ValueError("authority update layer is unsupported")
+        adapter = self._by_layer.get(layer)
+        if adapter is None:
+            raise LayerUnavailable("authority_not_configured")
+        try:
+            result = dict(
+                adapter.update(
+                    principal_id,
+                    project_id,
+                    operation,
+                    arguments,
+                    expected_revision=expected_revision,
+                )
+            )
+        except (LayerUnavailable, AuthorityLayerUnavailable) as exc:
+            raise LayerUnavailable(_public_reason(exc, "unavailable")) from exc
+        except Exception as exc:
+            raise TruthPlaneError(_public_reason(exc, "authority_update_failed")) from exc
+        return {"layer": layer, "result": result}
+
 
 
 class UnavailableLayerAdapter:
@@ -218,6 +263,18 @@ class UnavailableLayerAdapter:
         self, principal_id: str, project_id: str, reference: StableRef
     ) -> Mapping[str, Any]:
         del principal_id, project_id, reference
+        raise LayerUnavailable(self.reason)
+
+    def update(
+        self,
+        principal_id: str,
+        project_id: str,
+        operation: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_revision: str,
+    ) -> Mapping[str, Any]:
+        del principal_id, project_id, operation, arguments, expected_revision
         raise LayerUnavailable(self.reason)
 
 
@@ -259,6 +316,23 @@ class ProjectMappedLayer:
     ) -> Mapping[str, Any]:
         return self._adapter(project_id).get(principal_id, project_id, reference)
 
+    def update(
+        self,
+        principal_id: str,
+        project_id: str,
+        operation: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_revision: str,
+    ) -> Mapping[str, Any]:
+        return self._adapter(project_id).update(
+            principal_id,
+            project_id,
+            operation,
+            arguments,
+            expected_revision=expected_revision,
+        )
+
     def _adapter(self, project_id: str) -> LayerAdapter:
         adapter = self._adapters.get(project_id)
         if adapter is None:
@@ -277,7 +351,8 @@ class GraphifyLayer:
             self.router = GraphQueryRouter(
                 config, graphify_executable, timeout_seconds=15
             )
-        except GraphQueryError as exc:
+            self.controller = GraphSnapshotController(config, graphify_executable)
+        except (GraphQueryError, GraphControllerError) as exc:
             raise LayerUnavailable("graphify_runtime_unavailable") from exc
 
     def status(self, principal_id: str, project_id: str) -> Mapping[str, Any]:
@@ -343,6 +418,32 @@ class GraphifyLayer:
         if artifact.stable_ref != reference:
             raise TruthPlaneError("graph_reference_changed")
         return artifact.as_dict()
+
+    def update(
+        self,
+        principal_id: str,
+        project_id: str,
+        operation: str,
+        arguments: Mapping[str, Any],
+        *,
+        expected_revision: str,
+    ) -> Mapping[str, Any]:
+        if operation not in {"register_committed", "register_overlay"}:
+            raise TruthPlaneError("graph_update_operation_unsupported")
+        try:
+            method = (
+                self.controller.register_committed
+                if operation == "register_committed"
+                else self.controller.register_overlay
+            )
+            return method(
+                project_id,
+                arguments,
+                actor=authenticate(self.controller.config, principal_id).actor,
+                expected_revision=expected_revision,
+            )
+        except GraphControllerError as exc:
+            raise TruthPlaneError(str(exc)) from exc
 
 
 

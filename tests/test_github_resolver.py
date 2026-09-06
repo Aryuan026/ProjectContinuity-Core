@@ -95,6 +95,142 @@ def test_authenticated_resolver_reads_squash_pr_and_published_release(
     )
 
 
+def test_authenticated_resolver_reads_exact_collaboration_pr_candidate(
+    tmp_path: Path,
+) -> None:
+    base = "a" * 40
+    head = "b" * 40
+    row = {
+        "number": 9,
+        "state": "open",
+        "title": "[teamai] Contribute session knowledge from writer-agent",
+        "body": "Contribute session knowledge: exact handoff",
+        "html_url": "https://github.com/example/alpha/pull/9",
+        "head": {
+            "ref": "teamai/push/writer-agent/20260905-120000",
+            "sha": head,
+            "repo": {"full_name": "example/alpha"},
+        },
+        "base": {
+            "ref": "main",
+            "sha": base,
+            "repo": {"full_name": "example/alpha"},
+        },
+    }
+    opener = Opener(
+        {
+            "pulls?state=all&sort=created&direction=desc&per_page=100": [row],
+            "pulls/9": row,
+        }
+    )
+    resolver = GitHubAuthorityResolver(_token(tmp_path / "github-token"), opener=opener)
+
+    listed = resolver.collaboration_pull_requests("https://github.com/example/alpha")
+    exact = resolver.collaboration_pull_request(
+        "https://github.com/example/alpha", 9
+    )
+
+    assert listed == (exact,)
+    assert exact["head_revision"] == head
+    assert exact["base_revision"] == base
+    assert exact["head_ref"].startswith("teamai/push/writer-agent/")
+
+
+def test_authenticated_resolver_recovers_collaboration_pr_by_exact_head(
+    tmp_path: Path,
+) -> None:
+    base = "a" * 40
+    head = "b" * 40
+    branch = "teamai/push/writer-agent/20260905-120000"
+    target = {
+        "number": 9,
+        "state": "open",
+        "title": "[teamai] Contribute session knowledge from writer-agent",
+        "body": "Contribute session knowledge: exact handoff",
+        "html_url": "https://github.com/example/alpha/pull/9",
+        "head": {
+            "ref": branch,
+            "sha": head,
+            "repo": {"full_name": "example/alpha"},
+        },
+        "base": {
+            "ref": "main",
+            "sha": base,
+            "repo": {"full_name": "example/alpha"},
+        },
+    }
+    noise = [{"number": value} for value in range(100, 201)]
+    route = (
+        "pulls?state=all&head="
+        "example%3Ateamai%2Fpush%2Fwriter-agent%2F20260905-120000"
+        "&per_page=100"
+    )
+    opener = Opener(
+        {
+            "pulls?state=all&sort=created&direction=desc&per_page=100": noise,
+            route: [target],
+        }
+    )
+    resolver = GitHubAuthorityResolver(
+        _token(tmp_path / "github-token"), opener=opener
+    )
+
+    recovered = resolver.collaboration_pull_requests_for_head(
+        "https://github.com/example/alpha", branch
+    )
+
+    assert recovered[0]["pull_request"] == 9
+    assert recovered[0]["head_ref"] == branch
+    request, _timeout = opener.requests[0]
+    assert len(opener.requests) == 1
+    assert request.full_url.endswith(route)
+    assert "sort=created" not in request.full_url
+
+
+def test_authenticated_resolver_creates_one_exact_collaboration_pr(
+    tmp_path: Path,
+) -> None:
+    base = "a" * 40
+    head = "b" * 40
+    row = {
+        "number": 9,
+        "state": "open",
+        "title": "[teamai] Contribute session knowledge from writer-agent",
+        "body": "Contribute session knowledge: exact handoff",
+        "html_url": "https://github.com/example/alpha/pull/9",
+        "head": {
+            "ref": "teamai/push/writer-agent/20260905-120000",
+            "sha": head,
+            "repo": {"full_name": "example/alpha"},
+        },
+        "base": {
+            "ref": "main",
+            "sha": base,
+            "repo": {"full_name": "example/alpha"},
+        },
+    }
+    opener = Opener({"pulls": row})
+    resolver = GitHubAuthorityResolver(_token(tmp_path / "github-token"), opener=opener)
+
+    created = resolver.create_collaboration_pull_request(
+        "https://github.com/example/alpha",
+        head_ref=row["head"]["ref"],
+        base_ref="main",
+        subject=row["title"],
+        body=row["body"],
+    )
+
+    request, _timeout = opener.requests[0]
+    assert request.method == "POST"
+    assert json.loads(request.data) == {
+        "base": "main",
+        "body": row["body"],
+        "head": row["head"]["ref"],
+        "title": row["title"],
+    }
+    assert created["pull_request"] == 9
+
+
 def test_non_github_repository_is_rejected_before_any_request(tmp_path: Path) -> None:
     opener = Opener({})
     resolver = GitHubAuthorityResolver(_token(tmp_path / "github-token"), opener=opener)

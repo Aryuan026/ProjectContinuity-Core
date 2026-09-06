@@ -27,6 +27,35 @@ After durable project work, update the Stage that owns the changed fact. For ord
 
 A role-authorized routine handoff update is agent-owned. Do not ask for repeated confirmation when the user's task already includes completing and handing off the work.
 
+## Write to the fact owner
+
+Use the same `update` tool when durable work belongs to an external authority.
+First read that layer and retain its exact revision, then send the closed
+authority request:
+
+- `code`: `register_committed` or `register_overlay`;
+- `decisions`: `prepare_change` or `archive_change`;
+- `collaboration`: `contribute`;
+- `delivery`: read-only; accept the typed refusal and use the GitHub authority
+  through its separately authorized workflow.
+
+Authority writes require `target`, `operation`, `parameters`, and the exact
+`expected_revision`. Identity still comes from the MCP credential; never put an
+actor or principal in parameters. `truth-setup` and `truth-refresh` are
+stopped-front operator procedures, not Agent tools.
+
+If an authority update returns `operation_state=in_progress`, retain its
+`operation_id` and do not reinterpret the timeout as a failed write. Keep the
+same request bytes and `expected_revision`; after the retained worker finishes,
+replay that exact request so the authority-specific receipt can reconcile to
+the original branch, PR, or artifact instead of creating a duplicate.
+
+Keep parameters exact: committed code sends only `commit_sha`; a decision
+proposal sends `change_id` plus `artifacts` containing only `artifact_id`,
+`relative_output`, and `body`; decision archival sends only `change_id`; TeamAI
+contribution sends only `title` and `body`. For the less common prebuilt graph
+overlay shape, read `SCHEMA.md` instead of guessing fields or supplying a path.
+
 ## Promote rarely
 
 Use `promote` only when all of these already exist:

@@ -20,6 +20,27 @@ Do not call an installation usable because `/health` responds.
 - Keep credentials outside data snapshots and back them up through the owner's
   secret system, not inside this repository.
 - After durable engineering work, update the owning Stage with one CAS replace.
+- When the durable fact belongs to code, decisions, or collaboration, use the
+  same authenticated `update` tool with the owning target, its supported
+  operation, and the exact authority revision. GitHub delivery remains
+  read-only through ProjectContinuity.
+- Treat `backend_timeout` plus `operation_state=in_progress` as an unfinished
+  authority operation, not a failed write. Preserve its `operation_id`, keep
+  health and Stage reads available, and replay the exact request after the
+  retained worker reaches terminal state.
+- TeamAI contributions freeze the authenticated actor, request, and source
+  revision in a private prepared receipt. The donor runs from an exact-source
+  checkout and may stop after its native branch push; ProjectContinuity then
+  creates the PR through its existing GitHub authority. Durable branch and PR
+  transitions let a restarted front resume without creating a second
+  contribution. The donor title is an internal full-request-digest marker used
+  only to bind its learning filename; the controller supplies the human PR
+  title. A committed receipt is accepted only after GitHub and Git agree on the
+  single PR head, parent, request marker, content, author, and committer. The
+  donor supervisor inherits the existing command lock, so a front crash cannot
+  release a still-running donor for a second attempt; branch-bound PR recovery
+  queries GitHub by the receipt's exact same-repository head rather than by a
+  recent-PR window.
 - Promote only a coherent reviewed revision; reuse the same idempotency key after
   any interrupted attempt.
 
@@ -61,6 +82,25 @@ The minimum recoverable set is:
 Backups are offline recovery material, not a second writable ProjectContinuity.
 Record file counts and digests without storing private contents in Git.
 
+## Refresh managed truth projections
+
+After an authority repository merges a reviewed change, stop the front and
+fast-forward only the selected managed projections:
+
+```bash
+uv run project-continuity \
+  --config /absolute/private/config/config.toml \
+  truth-refresh --project-id project-alpha \
+  --layer delivery --layer openspec --layer teamai
+```
+
+The operation fetches and preflights every selected layer, pins all exact target
+commits, writes a durable receipt, and only then advances the first checkout. If
+it returns a partial receipt, repair the reported cause and replay the exact same
+project and layer set; do not change the layer set or chase a newer remote. Keep
+the front stopped until the receipt is complete, all checkouts read back exact,
+and the restarted front reports the expected layer identities.
+
 ## Restore or move the canonical front
 
 1. Stop the source front and prove the port is closed.
@@ -87,6 +127,9 @@ Record file counts and digests without storing private contents in Git.
   request and idempotency key. Do not invent a new promotion.
 - archive backend error: Stage operations should remain available; investigate
   Cognee without moving current cognition into a second store.
+- truth-plane refresh partial: keep the front stopped and replay the same
+  project/layer set so the receipt-bound target pins converge; do not edit
+  checkout HEADs by hand.
 
 ## Rollback
 

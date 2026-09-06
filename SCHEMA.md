@@ -51,7 +51,29 @@ Unknown top-level keys are rejected. Tool arguments are also closed per tool.
 - `get`: exactly one of `stage_id`, `promotion_id`, or `resource_ref`. A
   `resource_ref` is a complete StableRef previously returned by `list` or
   `search`; the front routes it back to its owning authority.
-- `update`: `stage_id`, `body`, `expected_revision`; optional `mode`.
+- `update` has two closed forms:
+  - current Stage: `stage_id`, `body`, `expected_revision`; optional `mode` and
+    `target="current"`;
+  - external authority: `target`, `operation`, `parameters`, and
+    `expected_revision`. Supported pairs are `code/register_committed`,
+    `code/register_overlay`, `decisions/prepare_change`,
+    `decisions/archive_change`, and `collaboration/contribute`. `delivery`
+    returns a typed read-only refusal.
+
+Authority operation parameters are closed:
+
+| Target / operation | Parameters |
+| --- | --- |
+| `code/register_committed` | `{"commit_sha":"<40 lowercase hex>"}` |
+| `code/register_overlay` | `base_sha`, `evidence_time`, `overlay_digest`, `snapshot_id` |
+| `decisions/prepare_change` | `change_id` and 1–12 `artifacts`, each containing only `artifact_id`, `relative_output`, and `body` |
+| `decisions/archive_change` | `{"change_id":"<bounded change id>"}` |
+| `collaboration/contribute` | `{"title":"<bounded title>","body":"<reviewed body>"}` |
+
+The request never accepts a repository path, credential, principal, or actor.
+Graph selection revisions come from the selected Graph StableRef (or `absent`);
+OpenSpec and TeamAI revisions are the exact managed checkout HEAD reported by
+their read/status result.
 - `promote`: exact source revision, stable idempotency key, provenance,
   review authority, and optional `corrects`/`supersedes` Case IDs.
 
@@ -75,3 +97,24 @@ cognify pipeline reports completion and exact readback succeeds.
 Promotion receipts use a SQLite recovery ledger with `prepared` and `committed`
 states. The prepared row temporarily holds the frozen Case payload. After commit,
 the payload is cleared while identity and outcome remain auditable.
+
+Truth-plane refresh receipts are operator-owned JSON checkpoints under the
+private state root. They freeze each selected layer's before/target/after state
+and a controller-owned Git ref before the first checkout advances. A partial
+refresh is replayed with the exact same project and layer set until it converges;
+it never follows a newer remote target during recovery.
+
+TeamAI contribution receipts are owner-private JSON records under
+`state_root/authority/teamai/<project_id>/`. `prepared` freezes the authenticated
+principal-derived actor, exact source revision, and canonical authority request
+digest before donor side effects. `branch_published` freezes the donor's exact
+branch and head; `pr_created` freezes the GitHub PR identity; `committed` adds
+the review state only after exact Git/GitHub readback. The donor-generated
+learning path begins with a 50-character base-36 encoding of the receipt's
+complete SHA-256 request digest. Exact replay returns the same
+`authority:<digest>` operation identity, resumes the first unfinished
+transition, and verifies committed work through the immutable PR head even if
+the source branch has since been deleted. While the donor process is live, an
+inherited command-lock descriptor keeps the operation exclusively owned across
+front-process death. Once `branch_published` exists, PR reconciliation is scoped
+to the receipt-bound same-repository branch rather than a time-ordered page.

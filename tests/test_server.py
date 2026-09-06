@@ -180,6 +180,26 @@ class FakeFront:
             mode=mode,
         )
 
+    def update_authority(
+        self,
+        principal_id,
+        project_id,
+        layer,
+        operation,
+        arguments,
+        *,
+        expected_revision,
+    ):
+        return self._result(
+            "update_authority",
+            principal_id,
+            project_id,
+            layer=layer,
+            operation=operation,
+            arguments=dict(arguments),
+            expected_revision=expected_revision,
+        )
+
     async def promote_stage(self, principal_id, project_id, stage_id, **arguments):
         return self._result(
             "promote", principal_id, project_id, stage_id=stage_id, **arguments
@@ -375,6 +395,142 @@ def test_case_get_and_search_reuse_the_existing_get_search_tools(tmp_path: Path)
     assert get[0] == 200
     assert [call[0] for call in front.calls] == ["search_cases", "get_case"]
     assert front.calls[0][3]["match"] == "keyword"
+
+
+def test_existing_update_tool_routes_typed_authority_write(tmp_path: Path) -> None:
+    with _running(tmp_path) as (port, front):
+        response = _invoke(
+            port,
+            TOKENS["writer-client"],
+            "update",
+            {
+                "target": "code",
+                "operation": "register_committed",
+                "parameters": {"commit_sha": "a" * 40},
+                "expected_revision": "absent",
+            },
+        )
+
+    assert response[0] == 200
+    assert front.calls == [
+        (
+            "update_authority",
+            "writer-client",
+            "alpha",
+            {
+                "arguments": {"commit_sha": "a" * 40},
+                "expected_revision": "absent",
+                "layer": "code",
+                "operation": "register_committed",
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target", "operation", "parameters", "expected_revision"),
+    [
+        ("code", "register_committed", {"commit_sha": "a" * 40}, "absent"),
+        (
+            "decisions",
+            "prepare_change",
+            {"change_id": "bounded-change", "artifacts": []},
+            "b" * 40,
+        ),
+        (
+            "collaboration",
+            "contribute",
+            {"title": "Bounded", "body": "Exact collaboration body."},
+            "c" * 40,
+        ),
+    ],
+)
+def test_authority_writes_retain_one_worker_and_expose_in_progress_identity(
+    monkeypatch,
+    tmp_path: Path,
+    target: str,
+    operation: str,
+    parameters: dict,
+    expected_revision: str,
+) -> None:
+    class BlockingAuthorityFront(FakeFront):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.finished = threading.Event()
+            self.active = 0
+            self.maximum = 0
+            self.state_lock = threading.Lock()
+
+        def update_authority(self, *args, **kwargs):
+            with self.state_lock:
+                self.active += 1
+                self.maximum = max(self.maximum, self.active)
+            self.entered.set()
+            try:
+                self.release.wait(2)
+                return super().update_authority(*args, **kwargs)
+            finally:
+                with self.state_lock:
+                    self.active -= 1
+                self.finished.set()
+
+    config = load_config(write_config(tmp_path / "runtime"))
+    credentials = _credentials(config, tmp_path / "credentials")
+    front = BlockingAuthorityFront()
+    server = create_server(config, credentials, port=0, front=front)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    port = server.server_address[1]
+    monkeypatch.setattr(
+        "project_continuity.server.AUTHORITY_OPERATION_TIMEOUT_SECONDS", 0.02
+    )
+    request = {
+        "target": target,
+        "operation": operation,
+        "parameters": parameters,
+        "expected_revision": expected_revision,
+    }
+    try:
+        timed_out = _invoke(
+            port, TOKENS["writer-client"], "update", request
+        )
+        assert front.entered.wait(1)
+        busy = _invoke(port, TOKENS["writer-client"], "update", request)
+        stage = _invoke(port, TOKENS["writer-client"], "list", {})
+        health = _request(port, "GET", "/health")
+
+        assert timed_out[0] == 504
+        assert busy[0] == 503
+        assert stage[0] == health[0] == 200
+        timeout_receipt = timed_out[1]
+        busy_receipt = busy[1]
+        assert timeout_receipt["capability"] == "authority_write"
+        assert timeout_receipt["operation_state"] == "in_progress"
+        assert timeout_receipt["operation_id"].startswith("authority:")
+        assert busy_receipt["operation_id"] == timeout_receipt["operation_id"]
+        assert front.maximum == 1
+
+        front.release.set()
+        assert front.finished.wait(1)
+        deadline = time.monotonic() + 1
+        while True:
+            retry = _invoke(port, TOKENS["writer-client"], "update", request)
+            if retry[0] == 200:
+                break
+            assert retry[0] == 503
+            assert retry[1]["operation_id"] == timeout_receipt["operation_id"]
+            if time.monotonic() >= deadline:
+                pytest.fail("retained authority worker did not release ownership")
+            time.sleep(0.01)
+        assert retry[0] == 200
+        assert front.maximum == 1
+    finally:
+        front.release.set()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
 
 
 def test_terminal_archive_timeouts_keep_the_call_capability_without_in_progress(

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
+import sys
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -88,14 +89,20 @@ def managed_git_environment(remote: Optional[str] = None) -> Dict[str, str]:
         token = _read_token(_private_token_file(Path(raw_path)))
     except GitHubResolverError as exc:
         raise ManagedGitError("managed_git_token_unsafe") from exc
-    credential = base64.b64encode(
-        ("x-access-token:" + token).encode("ascii")
-    ).decode("ascii")
+    del token
+    helper = "!%s %s" % (
+        shlex.quote(sys.executable),
+        shlex.quote(str(Path(__file__).with_name("git_credential.py"))),
+    )
     environment.update(
         {
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_KEY_1": "http.%s.extraheader" % remote,
-            "GIT_CONFIG_VALUE_1": "Authorization: Basic " + credential,
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_1": "credential.helper",
+            "GIT_CONFIG_VALUE_1": helper,
+            "GIT_CONFIG_KEY_2": "credential.useHttpPath",
+            "GIT_CONFIG_VALUE_2": "true",
+            "PROJECT_CONTINUITY_MANAGED_GIT_REMOTE": remote,
+            "PROJECT_CONTINUITY_MANAGED_GIT_TOKEN_FILE": str(Path(raw_path)),
         }
     )
     return environment

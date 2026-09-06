@@ -5,6 +5,10 @@ mutable project memory, and raw construction logs do not belong in this file.
 
 ## Unreleased
 
+- Keep a live TeamAI donor uniquely owned across front-process death by passing
+  the existing command lock through a bounded per-invocation supervisor. Resume
+  branch-published work through an exact GitHub head query instead of a recent
+  100-PR window.
 - Bound archive acquisition and execution with one server-owned request
   deadline. A timed-out non-cancellable worker remains the sole backend owner;
   retries receive a typed busy receipt until it finishes, while Stage and health
