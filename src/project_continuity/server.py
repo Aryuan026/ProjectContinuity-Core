@@ -63,6 +63,10 @@ class RequestError(ValueError):
     """One authenticated request does not match the frozen five-tool API."""
 
 
+class StageRevisionConflict(RuntimeError):
+    """A donor-native Stage CAS refusal reached the five-tool boundary."""
+
+
 class ArchiveOperationBusy(RuntimeError):
     """The sole archive worker still owns the backend after a prior request."""
 
@@ -316,6 +320,41 @@ class CredentialSet:
         return matched
 
 
+def _is_stage_revision_conflict(
+    value: Any,
+    *,
+    stage_id: str,
+    expected_revision: str,
+) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "ok",
+        "conflict",
+        "requested_revision",
+        "current_revision",
+        "current_stage",
+    }:
+        return False
+    current_stage = value["current_stage"]
+    return (
+        value["ok"] is False
+        and value["conflict"] is True
+        and _is_stage_revision(value["requested_revision"])
+        and _is_stage_revision(value["current_revision"])
+        and value["requested_revision"] == expected_revision
+        and value["requested_revision"] != value["current_revision"]
+        and isinstance(current_stage, Mapping)
+        and current_stage.get("stage_id") == stage_id
+    )
+
+
+def _is_stage_revision(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 16
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 class FrontApplication:
     """Validate transport input, then delegate to the existing front."""
 
@@ -373,7 +412,7 @@ class FrontApplication:
                     "Stage update arguments",
                     optional={"mode", "target"},
                 )
-                return self.front.update_stage(
+                result = self.front.update_stage(
                     principal_id,
                     project_id,
                     arguments["stage_id"],
@@ -381,6 +420,15 @@ class FrontApplication:
                     expected_revision=arguments["expected_revision"],
                     mode=arguments.get("mode", "replace"),
                 )
+                if _is_stage_revision_conflict(
+                    result,
+                    stage_id=arguments["stage_id"],
+                    expected_revision=arguments["expected_revision"],
+                ):
+                    raise StageRevisionConflict("stage_revision_conflict")
+                if isinstance(result, Mapping) and result.get("ok") is False:
+                    raise TurritopsisAdapterError("stage update failed")
+                return result
             _require_exact_keys(
                 arguments,
                 {"target", "operation", "parameters", "expected_revision"},
@@ -652,6 +700,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
         except (PromotionValidationError, KeyError, ValueError, TypeError) as exc:
             self._send(422, {"ok": False, "error": "invalid_operation", "detail": str(exc)})
+            return
+        except StageRevisionConflict as exc:
+            self._send(409, {"ok": False, "error": "operation_conflict", "detail": str(exc)})
             return
         except (ReceiptError, PromotionError) as exc:
             self._send(409, {"ok": False, "error": "operation_conflict", "detail": str(exc)})
