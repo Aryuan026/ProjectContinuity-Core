@@ -28,6 +28,7 @@ ARRIVAL_SUFFIXES = {
     "share/project-continuity/skills/project-continuity/SKILL.md",
     "share/project-continuity/skills/project-continuity/agents/openai.yaml",
     "share/project-continuity/third_party/licenses/COGNEE-LICENSE",
+    "share/project-continuity/third_party/licenses/COGNEE-NOTICE.md",
     "share/project-continuity/third_party/licenses/GRAPHIFY-LICENSE",
     "share/project-continuity/third_party/licenses/OPENSPEC-LICENSE",
     "share/project-continuity/third_party/licenses/TEAMAI-CLI-LICENSE",
@@ -48,6 +49,9 @@ SOURCE_SUFFIXES = {
     "vendor/teamai-runtime/package-lock.json",
     "vendor/teamai-runtime/project-continuity-literal-recall.mjs",
     "third_party/licenses/COGNEE-LICENSE",
+    "third_party/licenses/COGNEE-NOTICE.md",
+    "third_party/licenses/OPENSPEC-LICENSE",
+    "third_party/licenses/TEAMAI-CLI-LICENSE",
     "uv.lock",
 }
 FORBIDDEN_PARTS = {".venv", "node_modules", "credentials", ".secrets"}

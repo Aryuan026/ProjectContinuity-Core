@@ -78,7 +78,7 @@ future maintainers can update without erasing technical lineage.
 
 ### Graphify
 
-- Upstream: <https://github.com/safishamsi/graphify>
+- Upstream: <https://github.com/Graphify-Labs/graphify>
 - Reviewed commit: `b2cd36267456c166788c95be6e68574064a92a42`
 - Reviewed version: `0.9.48`
 - Upstream notice: Copyright 2026 Safi Shamsi and the Graphify contributors
