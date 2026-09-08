@@ -180,7 +180,7 @@ is an infrastructure dependency, not a project-memory authority.
 | Upstream | Relationship | Code included here |
 | --- | --- | --- |
 | [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Formal design decisions remain in OpenSpec. ProjectContinuity stores validated stable references to those decisions; it does not copy the decision ledger. | 0 upstream source files copied. |
-| [Graphify](https://github.com/safishamsi/graphify) | Exact-commit code reality remains in a clean Graphify artifact. ProjectContinuity validates and queries that artifact while hiding managed filesystem paths and rejecting learning sidecars. | 0 upstream source files copied; the exact executable is installed by the optional `graphify-code` extra. |
+| [Graphify](https://github.com/Graphify-Labs/graphify) | Exact-commit code reality remains in a clean Graphify artifact. ProjectContinuity validates and queries that artifact while hiding managed filesystem paths and rejecting learning sidecars. | 0 upstream source files copied; the exact executable is installed by the optional `graphify-code` extra. |
 
 Exact versions, reviewed commits, licenses, notices, and the boundary between
 runtime use, adapter code, and architectural reference are recorded in

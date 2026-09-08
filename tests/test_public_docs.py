@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -8,6 +9,33 @@ except ModuleNotFoundError:  # Python 3.10
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_reviewed_upstream_license_and_notice_bytes_are_exact() -> None:
+    expected_sha256 = {
+        "COGNEE-NOTICE.md": (
+            "e8bdec68fde44a97229e03b10e1f921a3312f0663bf51961d9d04d2da3b4a397"
+        ),
+        "TEAMAI-CLI-LICENSE": (
+            "31154d9c1a8bd8d37b449bdbb8a04f9b4618e5d330b52b0fdb7c452414d75a41"
+        ),
+        "OPENSPEC-LICENSE": (
+            "c3c7235bea1214ab62df643473975c2e8b8848f528901a976693f7d069713e64"
+        ),
+    }
+    licenses = ROOT / "third_party" / "licenses"
+    for name, expected in expected_sha256.items():
+        assert hashlib.sha256((licenses / name).read_bytes()).hexdigest() == expected
+
+
+def test_current_graphify_links_use_the_canonical_repository() -> None:
+    documents = (
+        (ROOT / "README.md").read_text(encoding="utf-8"),
+        (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8"),
+    )
+    for document in documents:
+        assert "https://github.com/Graphify-Labs/graphify" in document
+        assert "https://github.com/safishamsi/graphify" not in document
 
 
 def test_agent_entry_routes_first_install_and_maintenance() -> None:
